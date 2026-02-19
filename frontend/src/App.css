@@ -1,0 +1,40 @@
+.App {
+  min-height: 100vh;
+}
+
+.sidebar-nav-link {
+  transition: background-color 200ms ease-in-out, border-left-color 200ms ease-in-out;
+}
+
+.sidebar-nav-link:hover {
+  background-color: hsl(var(--muted));
+}
+
+.sidebar-nav-link.active {
+  background-color: hsl(var(--muted));
+  border-left-color: hsl(var(--primary));
+  font-weight: 600;
+}
+
+.document-pane {
+  background-color: hsl(var(--secondary));
+}
+
+.chat-message-user {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+.chat-message-assistant {
+  background-color: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.legal-badge {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  background-color: hsl(var(--primary) / 0.1);
+  color: hsl(var(--primary));
+  padding: 0.125rem 0.5rem;
+  border-radius: 0.25rem;
+}

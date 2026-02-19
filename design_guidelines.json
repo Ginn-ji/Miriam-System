@@ -1,0 +1,147 @@
+{
+  "brand_identity": {
+    "name": "Batas.AI",
+    "metaphor": "The Modern Chambers",
+    "emotion": "Authority, Clarity, Precision, Trust",
+    "description": "A legal assistance tool that feels like a high-end law firm's digital workspace. It balances the weight of tradition (serifs, paper tones) with the speed of AI (clean layouts, instant feedback)."
+  },
+  "typography": {
+    "primary_font": "Manrope",
+    "secondary_font": "Merriweather",
+    "mono_font": "JetBrains Mono",
+    "scale": {
+      "h1": "text-4xl md:text-5xl font-serif font-bold tracking-tight",
+      "h2": "text-3xl md:text-4xl font-serif font-semibold tracking-tight",
+      "h3": "text-2xl font-serif font-medium",
+      "body": "text-base font-sans leading-relaxed",
+      "small": "text-sm font-sans text-muted-foreground",
+      "citation": "text-xs font-mono text-primary/70 bg-primary/5 px-1 py-0.5 rounded"
+    },
+    "import_url": "https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Merriweather:ital,wght@0,300;0,400;0,700;0,900;1,300&family=JetBrains+Mono:wght@400;500&display=swap"
+  },
+  "colors": {
+    "palette": {
+      "primary": {
+        "DEFAULT": "hsl(220, 35%, 20%)",
+        "foreground": "hsl(0, 0%, 100%)",
+        "description": "Deep Navy - Represents authority and stability."
+      },
+      "secondary": {
+        "DEFAULT": "hsl(30, 20%, 96%)",
+        "foreground": "hsl(220, 35%, 20%)",
+        "description": "Bone White - Mimics high-quality legal paper, reduces eye strain."
+      },
+      "accent": {
+        "DEFAULT": "hsl(10, 70%, 50%)",
+        "foreground": "hsl(0, 0%, 100%)",
+        "description": "Terracotta - Used sparingly for alerts, critical tags, and primary CTAs."
+      },
+      "muted": {
+        "DEFAULT": "hsl(220, 10%, 94%)",
+        "foreground": "hsl(220, 10%, 40%)",
+        "description": "Cool Grey - For backgrounds and dividers."
+      },
+      "background": "hsl(0, 0%, 100%)",
+      "foreground": "hsl(220, 20%, 10%)"
+    },
+    "usage_rules": [
+      "Never use pure black (#000000). Use the Deep Navy or Dark Grey.",
+      "Backgrounds for reading panes should be 'Bone White' (Secondary) to simulate paper.",
+      "Primary Blue is for navigation and active states.",
+      "Terracotta Accent is for 'Action Required' or 'High Priority' items only."
+    ]
+  },
+  "visual_enhancers": {
+    "radius": "rounded-sm",
+    "shadows": {
+      "card": "shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)]",
+      "dropdown": "shadow-[0_4px_6px_-1px_rgba(0,0,0,0.1),0_2px_4px_-1px_rgba(0,0,0,0.06)]",
+      "hover": "shadow-[0_10px_15px_-3px_rgba(0,0,0,0.1),0_4px_6px_-2px_rgba(0,0,0,0.05)]"
+    },
+    "borders": "border border-slate-200",
+    "glassmorphism": "bg-white/80 backdrop-blur-md border-b border-white/20"
+  },
+  "component_name": {
+    "button": "Button",
+    "card": "Card",
+    "input": "Input",
+    "dialog": "Dialog",
+    "sheet": "Sheet",
+    "table": "Table",
+    "badge": "Badge"
+  },
+  "grids": {
+    "dashboard": "grid grid-cols-1 md:grid-cols-12 gap-6",
+    "document_view": "grid grid-cols-1 lg:grid-cols-2 gap-8 h-[calc(100vh-4rem)]",
+    "marketing_hero": "grid grid-cols-1 md:grid-cols-12 gap-y-8 gap-x-12"
+  },
+  "layouts": {
+    "dashboard_shell": "flex h-screen overflow-hidden bg-muted/30",
+    "sidebar": "w-64 flex-shrink-0 border-r bg-background hidden md:block",
+    "main_content": "flex-1 overflow-y-auto p-8",
+    "centered_container": "max-w-5xl mx-auto w-full"
+  },
+  "motion": {
+    "duration": {
+      "fast": "150ms",
+      "normal": "300ms",
+      "slow": "500ms"
+    },
+    "ease": "cubic-bezier(0.16, 1, 0.3, 1)",
+    "animations": {
+      "fade_in": "animate-in fade-in duration-500",
+      "slide_up": "animate-in slide-in-from-bottom-4 fade-in duration-500",
+      "accordion": "transition-all duration-200 ease-in-out"
+    }
+  },
+  "accessibility": {
+    "contrast_check": "Ensure all text on 'Bone White' is at least Dark Grey or Deep Navy.",
+    "focus_states": "ring-2 ring-primary ring-offset-2",
+    "aria_labels": "Required for all icon-only buttons."
+  },
+  "media": {
+    "logo_style": "Typographic, Serif, Bold. Simple 'Scale' or 'Pillar' icon.",
+    "image_style": "Desaturated, professional, high-contrast. No cartoons."
+  },
+  "3d_libraries": {
+    "usage": "Minimal. Use only for subtle data visualization if absolutely necessary.",
+    "preferred": "Recharts (2D) is preferred over 3D for legal data clarity."
+  },
+  "image_urls": {
+    "office_interior": "https://images.unsplash.com/photo-1598139384902-5a8217874645?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwyfHxtb2Rlcm4lMjBsYXclMjBvZmZpY2UlMjBpbnRlcmlvciUyMG1pbmltYWxpc3R8ZW58MHx8fHwxNzcxNDMyNDk3fDA&ixlib=rb-4.1.0&q=85",
+    "lawyer_working": "https://images.unsplash.com/photo-1701760211427-e7a9068028b2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwxfHxsYXd5ZXIlMjB3b3JraW5nJTIwb24lMjBsYXB0b3AlMjBwcm9mZXNzaW9uYWx8ZW58MHx8fHwxNzcxNDMyNDk5fDA&ixlib=rb-4.1.0&q=85",
+    "legal_research": "https://images.unsplash.com/photo-1762341115358-44dd9d3c49cc?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2NzB8MHwxfHNlYXJjaHwzfHxsYXd5ZXIlMjB3b3JraW5nJTIwb24lMjBsYXB0b3AlMjBwcm9mZXNzaW9uYWx8ZW58MHx8fHwxNzcxNDMyNDk5fDA&ixlib=rb-4.1.0&q=85",
+    "meeting_room": "https://images.unsplash.com/photo-1755551636821-01c102d8349e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NTY2Nzd8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBsYXclMjBvZmZpY2UlMjBpbnRlcmlvciUyMG1pbmltYWxpc3R8ZW58MHx8fHwxNzcxNDMyNDk3fDA&ixlib=rb-4.1.0&q=85"
+  },
+  "component_path": "/app/frontend/src/components/ui",
+  "instructions_to_main_agent": [
+    "1. INSTALL FONTS: Add the Google Fonts import to index.css immediately.",
+    "2. CONFIGURE TAILWIND: Update tailwind.config.js with the 'Deep Navy' and 'Bone White' palette.",
+    "3. SHADCN OVERRIDES: Update the 'radius' in tailwind config to 0.25rem (rounded-sm) for a sharper, professional look.",
+    "4. LAYOUT STRATEGY: Use the 'Dashboard Shell' layout for all authenticated pages. Use 'Marketing Hero' grid for the landing page.",
+    "5. DOCUMENT VIEW: This is the core feature. Use a split-pane layout (Original Doc Left / AI Analysis Right). Use 'Bone White' background for the document pane to reduce eye strain.",
+    "6. LANGUAGE TOGGLE: Make the English/Tagalog toggle prominent in the top nav.",
+    "7. EMPTY STATES: Use the 'office_interior' image with a grayscale filter as a background for empty states or 404 pages."
+  ],
+  "universal_guidelines": [
+    "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy",
+    "Use glass-morphism effects with backdrop filters (12-24px blur)",
+    "You MUST NOT apply universal transition. Eg: transition: all. This results in breaking transforms. Always add transitions for specific interactive elements like button, input excluding transforms",
+    "You MUST NOT center align the app container, ie do not add .App { text-align: center; } in the css file. This disrupts the human natural reading flow of text",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style",
+    "NEVER: use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯📚🎭🎬🎪🎉🎊🎁🎀🎂🍰🎈🎨🎰💰💵💳🏦💎🪙💸🤑📊📈📉💹🔢🏆🥇 etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions, parallax effects, and entrance animations. Static = dead.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Subtle grain textures, noise overlays, custom cursors, selection states, and loading animations: separates good from extraordinary.",
+    "Main agent relies on these image URLs. Missing categories (especially sponsor logos) = main agent will use placeholder text which is FORBIDDEN",
+    "Prioritize using pre-existing components from src/components/ui when applicable",
+    "Create new components that match the style and conventions of existing components when needed",
+    "Examine existing components to understand the project's component patterns before creating new ones",
+    "Components MUST use named exports (export const ComponentName = ...)",
+    "Pages MUST use default exports (export default function PageName() {...})",
+    "Use sonner for toasts. Sonner component are located in /app/src/components/ui/sonner.tsx"
+  ]
+}
