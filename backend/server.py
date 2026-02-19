@@ -173,7 +173,7 @@ async def initialize_legal_knowledge():
 
 @api_router.get("/")
 async def root():
-    return {"message": "Batas.AI Legal Assistance API"}
+    return {"message": "Miriam Legal Assistance API"}
 
 # Language Detection
 @api_router.post("/detect-language")
@@ -407,7 +407,7 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def startup_event():
     await initialize_legal_knowledge()
-    logger.info("Batas.AI API Started")
+    logger.info("Miriam API Started")
 
 @app.on_event("shutdown")
 async def shutdown_db_client():
