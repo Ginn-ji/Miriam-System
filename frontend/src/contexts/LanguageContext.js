@@ -15,8 +15,8 @@ export const LanguageProvider = ({ children }) => {
 
   const translations = {
     en: {
-      appName: 'Batas.AI',
-      tagline: 'Philippine Legal Assistance',
+      appName: 'Miriam',
+      tagline: 'Legal Awareness Support System',
       dashboard: 'Dashboard',
       documents: 'Documents',
       translate: 'Translate',
@@ -28,7 +28,7 @@ export const LanguageProvider = ({ children }) => {
       recentTranslations: 'Recent Translations',
       chatSessions: 'Chat Sessions',
       legalArticles: 'Legal Articles',
-      welcome: 'Welcome to Batas.AI',
+      welcome: 'Welcome to Miriam',
       welcomeDesc: 'Your AI-powered Philippine legal assistant',
       noDocuments: 'No documents uploaded yet',
       uploadHere: 'Upload your first document',
@@ -49,11 +49,11 @@ export const LanguageProvider = ({ children }) => {
       send: 'Send',
       assistant: 'Legal Assistant',
       you: 'You',
-      disclaimer: 'This is for informational purposes only and does not constitute legal advice.',
+      
     },
     tl: {
-      appName: 'Batas.AI',
-      tagline: 'Tulong Legal ng Pilipinas',
+      appName: 'Miriam',
+      tagline: 'Legal Awareness Support System',
       dashboard: 'Dashboard',
       documents: 'Mga Dokumento',
       translate: 'Isalin',
@@ -65,7 +65,7 @@ export const LanguageProvider = ({ children }) => {
       recentTranslations: 'Kamakailang Pagsasalin',
       chatSessions: 'Mga Chat Session',
       legalArticles: 'Mga Artikulo ng Batas',
-      welcome: 'Maligayang pagdating sa Batas.AI',
+      welcome: 'Maligayang pagdating sa Miriam',
       welcomeDesc: 'Ang iyong AI-powered na tulong legal ng Pilipinas',
       noDocuments: 'Walang naka-upload na dokumento',
       uploadHere: 'Mag-upload ng iyong unang dokumento',
@@ -86,7 +86,6 @@ export const LanguageProvider = ({ children }) => {
       send: 'Ipadala',
       assistant: 'Legal Assistant',
       you: 'Ikaw',
-      disclaimer: 'Ito ay para sa layuning pang-impormasyon lamang at hindi bumubuo ng legal na payo.',
     },
   };
 
