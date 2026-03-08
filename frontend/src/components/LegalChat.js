@@ -3,161 +3,104 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
-import { Send, Bot, User } from 'lucide-react';
+import { Send, Bot, User, Paperclip } from 'lucide-react';
 import apiClient from '../api/apiClient';
 import { toast } from 'sonner';
 
-export const LegalChat = () => {
+export const LegalChat = ({ user }) => {
   const { t } = useLanguage();
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [file, setFile] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const messagesEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   useEffect(() => {
-    const newSessionId = `session_${Date.now()}`;
-    setSessionId(newSessionId);
+    setSessionId(`session_${Date.now()}`);
   }, []);
 
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
   const handleSend = async () => {
-    if (!input.trim() || loading) return;
+    if ((!input.trim() && !file) || loading) return;
 
-    const userMessage = { role: 'user', content: input };
+    // Display user message in UI
+    const userMessage = { role: 'user', content: input, fileName: file?.name };
     setMessages((prev) => [...prev, userMessage]);
+    
+    const formData = new FormData();
+    formData.append("message", input);
+    formData.append("session_id", sessionId);
+    if (file) formData.append("file", file);
+    if (user.role !== 'guest') formData.append("user_id", user.id);
+
     setInput('');
+    setFile(null);
     setLoading(true);
 
     try {
-      const response = await apiClient.post('/chat', {
-        message: input,
-        session_id: sessionId,
+      const response = await apiClient.post('/chat', formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
       });
-
-      const assistantMessage = {
-        role: 'assistant',
-        content: response.data.response,
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
+      setMessages((prev) => [...prev, { role: 'assistant', content: response.data.response }]);
     } catch (error) {
-      console.error('Chat error:', error);
       toast.error('Failed to get response');
-      setMessages((prev) => [
-        ...prev,
-        {
-          role: 'assistant',
-          content: 'I apologize, but I encountered an error. Please try again.',
-        },
-      ]);
+      setMessages((prev) => [...prev, { role: 'assistant', content: 'Error: Could not connect to the server.' }]);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleKeyPress = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      handleSend();
-    }
-  };
-
   return (
-    <div className="h-[calc(100vh-8rem)] flex flex-col" data-testid="chat-page">
+    <div className="h-[calc(100vh-8rem)] flex flex-col">
       <div className="mb-4">
-        <h1 className="text-4xl font-serif font-bold tracking-tight text-primary" data-testid="chat-title">
-          {t('legalChat')}
-        </h1>
+        <h1 className="text-4xl font-serif font-bold tracking-tight text-primary">{t('legalChat')}</h1>
         <p className="text-muted-foreground mt-1">{t('askLegalQuestion')}</p>
       </div>
 
-      <Card className="flex-1 flex flex-col shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)]">
+      <Card className="flex-1 flex flex-col shadow-lg">
         <CardHeader className="border-b">
           <CardTitle className="font-serif flex items-center gap-2">
-            <Bot className="h-5 w-5 text-primary" />
-            {t('assistant')}
+            <Bot className="h-5 w-5 text-primary" /> {t('assistant')}
           </CardTitle>
         </CardHeader>
-        <CardContent className="flex-1 overflow-y-auto p-6 space-y-4" data-testid="chat-messages">
-          {messages.length === 0 ? (
-            <div className="text-center py-12" data-testid="empty-chat">
-              <Bot className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
-              <p className="text-muted-foreground">{t('askLegalQuestion')}</p>
-              <p className="text-sm text-muted-foreground mt-2">{t('disclaimer')}</p>
-            </div>
-          ) : (
-            messages.map((msg, idx) => (
-              <div
-                key={idx}
-                className={`flex items-start gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}
-                data-testid={`chat-message-${msg.role}`}
-              >
-                {msg.role === 'assistant' && (
-                  <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center flex-shrink-0">
-                    <Bot className="h-5 w-5 text-primary-foreground" />
-                  </div>
-                )}
-                <div
-                  className={`max-w-[80%] px-4 py-3 rounded-sm ${
-                    msg.role === 'user'
-                      ? 'chat-message-user'
-                      : 'chat-message-assistant'
-                  }`}
-                >
-                  <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
-                </div>
-                {msg.role === 'user' && (
-                  <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center flex-shrink-0">
-                    <User className="h-5 w-5 text-foreground" />
-                  </div>
-                )}
-              </div>
-            ))
-          )}
-          {loading && (
-            <div className="flex items-start gap-3">
-              <div className="w-8 h-8 rounded-full bg-primary flex items-center justify-center flex-shrink-0">
-                <Bot className="h-5 w-5 text-primary-foreground" />
-              </div>
-              <div className="max-w-[80%] px-4 py-3 rounded-sm chat-message-assistant">
-                <div className="flex gap-1">
-                  <span className="w-2 h-2 bg-primary rounded-full animate-bounce" />
-                  <span className="w-2 h-2 bg-primary rounded-full animate-bounce [animation-delay:0.2s]" />
-                  <span className="w-2 h-2 bg-primary rounded-full animate-bounce [animation-delay:0.4s]" />
-                </div>
+        <CardContent className="flex-1 overflow-y-auto p-6 space-y-4">
+          {messages.map((msg, idx) => (
+            <div key={idx} className={`flex items-start gap-3 ${msg.role === 'user' ? 'justify-end' : ''}`}>
+              <div className={`max-w-[80%] px-4 py-3 rounded-sm ${msg.role === 'user' ? 'chat-message-user' : 'chat-message-assistant'}`}>
+                <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                {msg.fileName && <p className="text-xs mt-1 opacity-70 italic">📎 Attached: {msg.fileName}</p>}
               </div>
             </div>
-          )}
+          ))}
           <div ref={messagesEndRef} />
         </CardContent>
         <div className="border-t p-4">
-          <div className="flex gap-2">
-            <Textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyPress={handleKeyPress}
-              placeholder={t('typeMessage')}
-              className="min-h-[60px] resize-none"
-              disabled={loading}
-              data-testid="chat-input"
+          {file && <div className="text-xs text-primary mb-2">📎 Prepared to upload: {file.name}</div>}
+          <div className="flex gap-2 items-center">
+            <input 
+              type="file" 
+              hidden 
+              ref={fileInputRef} 
+              onChange={(e) => setFile(e.target.files[0])} 
             />
-            <Button
-              onClick={handleSend}
-              disabled={loading || !input.trim()}
-              size="lg"
-              data-testid="chat-send-btn"
-            >
+            <Button variant="ghost" size="icon" onClick={() => fileInputRef.current.click()}>
+              <Paperclip className="h-5 w-5" />
+            </Button>
+            <Textarea 
+              value={input} 
+              onChange={(e) => setInput(e.target.value)} 
+              placeholder={t('typeMessage')} 
+              className="min-h-[60px] resize-none" 
+            />
+            <Button onClick={handleSend} disabled={loading || (!input.trim() && !file)} size="lg">
               <Send className="h-5 w-5" />
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground mt-2 italic">{t('disclaimer')}</p>
         </div>
       </Card>
     </div>

@@ -1,32 +1,43 @@
 import "@/App.css";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import React, { useState } from "react";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { LanguageProvider } from "./contexts/LanguageContext";
 import { Sidebar } from "./components/Sidebar";
 import { Dashboard } from "./components/Dashboard";
-import { Documents } from "./components/Documents";
-import { Translate } from "./components/Translate";
 import { LegalChat } from "./components/LegalChat";
 import { History } from "./components/History";
 import { Knowledge } from "./components/Knowledge";
+import Login from "./components/Login";
 import { Toaster } from "./components/ui/sonner";
 
 function App() {
+  const [user, setUser] = useState(null);
+
+  // If user is not authenticated, strictly show the Login/Register component
+  if (!user) {
+    return <Login onLogin={setUser} />;
+  }
+
   return (
     <LanguageProvider>
       <div className="App flex h-screen overflow-hidden bg-background">
         <BrowserRouter>
-          <Sidebar />
-          <main className="flex-1 overflow-y-auto p-8" data-testid="main-content">
-            <div className="max-w-7xl mx-auto">
-              <Routes>
-                <Route path="/" element={<Dashboard />} />
-                <Route path="/documents" element={<Documents />} />
-                <Route path="/translate" element={<Translate />} />
-                <Route path="/chat" element={<LegalChat />} />
-                <Route path="/history" element={<History />} />
-                <Route path="/knowledge" element={<Knowledge />} />
-              </Routes>
-            </div>
+          {/* Sidebar now receives the logged-in user and a logout function */}
+          <Sidebar user={user} onLogout={() => setUser(null)} />
+          <main className="flex-1 overflow-y-auto p-8">
+            <Routes>
+              <Route path="/" element={<Dashboard user={user} />} />
+              <Route path="/chat" element={<LegalChat user={user} />} />
+              {/* History is only accessible if user is not a guest */}
+              <Route 
+                path="/history" 
+                element={user.role !== 'guest' ? <History user={user} /> : <Navigate to="/chat" />} 
+              />
+              <Route 
+                path="/knowledge" 
+                element={user.role === 'admin' ? <Knowledge user={user} /> : <Navigate to="/chat" />} 
+              />
+            </Routes>
           </main>
         </BrowserRouter>
         <Toaster position="top-right" />
