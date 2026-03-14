@@ -1,4 +1,4 @@
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -13,6 +13,14 @@ from datetime import datetime, timezone
 import PyPDF2
 import io
 from langdetect import detect, DetectorFactory
+from groq import Groq
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 DetectorFactory.seed = 0
 
@@ -31,8 +39,7 @@ app = FastAPI()
 api_router = APIRouter(prefix="/api")
 
 # Initialize Emergent LLM Key
-EMERGENT_KEY = os.getenv("EMERGENT_LLM_KEY", "")
-
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ==================== MODELS ====================
 
 class TranslationRequest(BaseModel):
@@ -296,33 +303,50 @@ async def get_document(document_id: str):
 
 # Legal Chat with Claude Sonnet
 @api_router.post("/chat", response_model=ChatResponse)
-async def legal_chat(request: ChatRequest):
+async def legal_chat(
+    message: str = Form(...),
+    session_id: Optional[str] = Form(None),
+    context: Optional[str] = Form(None),
+    user_id: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None)
+):
     try:
-        session_id = request.session_id or str(uuid.uuid4())
+        session_id = session_id or str(uuid.uuid4())
         
-        # Initialize Claude chat
-        chat = LlmChat(
-            api_key=EMERGENT_KEY,
-            session_id=session_id,
-            system_message="You are a knowledgeable Philippine legal assistant. Provide accurate, helpful legal information while clearly stating you are not providing legal advice. Reference relevant Philippine laws when applicable. Be professional and clear."
-        ).with_model("anthropic", "claude-sonnet-4-20250514")
+        # Build message
+        message_text = message
         
-        # Add context if provided
-        message_text = request.message
-        if request.context:
-            message_text = f"Context: {request.context}\n\nQuestion: {request.message}"
+        # If file is attached, extract its content
+        if file:
+            content = await file.read()
+            if file.filename.endswith('.pdf'):
+                file_text = await extract_text_from_pdf(content)
+            else:
+                file_text = content.decode('utf-8')
+            message_text = f"Document content:\n{file_text}\n\nQuestion: {message}"
         
-        # Send message
-        user_message = UserMessage(text=message_text)
-        response = await chat.send_message(user_message)
+        if context:
+            message_text = f"Context: {context}\n\nQuestion: {message_text}"
+        
+        # Call Groq API
+        groq_client = Groq(api_key=GROQ_API_KEY)
+        completion = groq_client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a knowledgeable Philippine legal assistant. Provide accurate, helpful legal information while clearly stating you are not providing legal advice. Reference relevant Philippine laws when applicable. Be professional and clear."},
+                {"role": "user", "content": message_text}
+            ],
+            max_tokens=1024
+        )
+        response = completion.choices[0].message.content
         
         # Save chat history
         chat_record = {
             "id": str(uuid.uuid4()),
             "session_id": session_id,
-            "user_message": request.message,
+            "user_message": message,
             "assistant_response": response,
-            "context": request.context,
+            "context": context,
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.chat_history.insert_one(chat_record)
@@ -331,8 +355,10 @@ async def legal_chat(request: ChatRequest):
             response=response,
             session_id=session_id
         )
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"General error: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"General error: {str(e)}")
 
 # Get Chat History
 @api_router.get("/chat/sessions/{session_id}")
@@ -395,13 +421,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
 
 @app.on_event("startup")
 async def startup_event():
