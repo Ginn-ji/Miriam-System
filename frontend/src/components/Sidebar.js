@@ -45,7 +45,7 @@ export const Sidebar = ({ user, onLogout }) => {
           <span className="text-sm">{t('legalChat')}</span>
         </Link>
 
-        {/* Guest Logic: Hide History */}
+        {/* Hide History for guests */}
         {user.role !== 'guest' && (
           <Link
             to="/history"
@@ -58,18 +58,16 @@ export const Sidebar = ({ user, onLogout }) => {
           </Link>
         )}
 
-        {/* Admin Logic: Show Knowledge */}
-        {user.role === 'admin' && (
-          <Link
-            to="/knowledge"
-            className={`flex items-center gap-3 px-3 py-2.5 rounded-sm border-l-2 sidebar-nav-link ${
-              location.pathname === '/knowledge' ? 'active border-l-primary' : 'border-l-transparent'
-            }`}
-          >
-            <BookOpen className="h-5 w-5" />
-            <span className="text-sm">{t('knowledge')}</span>
-          </Link>
-        )}
+        {/* Knowledge visible to all roles */}
+        <Link
+          to="/knowledge"
+          className={`flex items-center gap-3 px-3 py-2.5 rounded-sm border-l-2 sidebar-nav-link ${
+            location.pathname === '/knowledge' ? 'active border-l-primary' : 'border-l-transparent'
+          }`}
+        >
+          <BookOpen className="h-5 w-5" />
+          <span className="text-sm">{t('knowledge')}</span>
+        </Link>
       </nav>
 
       <div className="p-4 border-t space-y-2">

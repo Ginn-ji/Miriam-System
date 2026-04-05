@@ -13,7 +13,7 @@ const Login = ({ onLogin }) => {
               <Shield className="h-8 w-8 text-primary" />
             </div>
           </div>
-          <CardTitle className="text-3xl font-serif font-bold text-primary"> Astraea </CardTitle>
+          <CardTitle className="text-3xl font-serif font-bold text-primary"> LACBot </CardTitle>
           <CardDescription className="text-sm text-muted-foreground">
             Legal Awareness Support System
           </CardDescription>

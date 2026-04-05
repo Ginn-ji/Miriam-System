@@ -35,7 +35,7 @@ function App() {
               />
               <Route 
                 path="/knowledge" 
-                element={user.role === 'admin' ? <Knowledge user={user} /> : <Navigate to="/chat" />} 
+                element={<Knowledge user={user} />} 
               />
             </Routes>
           </main>

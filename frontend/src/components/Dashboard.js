@@ -2,11 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { useLanguage } from '../contexts/LanguageContext';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
-import { FileText, Languages, MessageSquare, BookOpen, ArrowRight } from 'lucide-react';
+import { FileText, MessageSquare, BookOpen, ArrowRight, History as HistoryIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import apiClient from '../api/apiClient';
 
-export const Dashboard = () => {
+export const Dashboard = ({ user }) => {
   const { t } = useLanguage();
   const [stats, setStats] = useState({
     documents: 0,
@@ -38,7 +38,6 @@ export const Dashboard = () => {
 
   const statCards = [
     { icon: FileText, label: t('recentDocuments'), value: stats.documents, color: 'text-blue-600' },
-    { icon: Languages, label: t('recentTranslations'), value: stats.translations, color: 'text-green-600' },
     { icon: MessageSquare, label: t('chatSessions'), value: stats.chat_sessions, color: 'text-purple-600' },
     { icon: BookOpen, label: t('legalArticles'), value: stats.legal_articles, color: 'text-orange-600' },
   ];
@@ -106,11 +105,6 @@ export const Dashboard = () => {
               <div className="text-center py-8">
                 <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
                 <p className="text-sm text-muted-foreground">{t('noDocuments')}</p>
-                <Link to="/documents">
-                  <Button variant="outline" size="sm" className="mt-3" data-testid="upload-first-doc-btn">
-                    {t('uploadHere')}
-                  </Button>
-                </Link>
               </div>
             )}
           </CardContent>
@@ -124,24 +118,31 @@ export const Dashboard = () => {
             <CardTitle className="font-serif">Quick Actions</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <Link to="/documents" className="block">
-              <Button variant="outline" className="w-full justify-start" data-testid="quick-upload-btn">
-                <FileText className="h-4 w-4 mr-2" />
-                {t('uploadDocument')}
-              </Button>
-            </Link>
-            <Link to="/translate" className="block">
-              <Button variant="outline" className="w-full justify-start" data-testid="quick-translate-btn">
-                <Languages className="h-4 w-4 mr-2" />
-                {t('translateText')}
-              </Button>
-            </Link>
+            {/* Accessible by all roles */}
             <Link to="/chat" className="block">
               <Button variant="outline" className="w-full justify-start" data-testid="quick-chat-btn">
                 <MessageSquare className="h-4 w-4 mr-2" />
                 {t('askLegalQuestion')}
               </Button>
             </Link>
+
+            {/* Accessible by all roles */}
+            <Link to="/knowledge" className="block">
+              <Button variant="outline" className="w-full justify-start" data-testid="quick-knowledge-btn">
+                <BookOpen className="h-4 w-4 mr-2" />
+                {t('knowledge')}
+              </Button>
+            </Link>
+
+            {/* Only for non-guests */}
+            {user?.role !== 'guest' && (
+              <Link to="/history" className="block">
+                <Button variant="outline" className="w-full justify-start" data-testid="quick-history-btn">
+                  <HistoryIcon className="h-4 w-4 mr-2" />
+                  {t('history')}
+                </Button>
+              </Link>
+            )}
           </CardContent>
         </Card>
       </div>

@@ -15,7 +15,7 @@ export const LanguageProvider = ({ children }) => {
 
   const translations = {
     en: {
-      appName: 'Astraea',
+      appName: 'LACBot',
       tagline: 'Legal Awareness Support System',
       dashboard: 'Dashboard',
       documents: 'Documents',
@@ -28,7 +28,7 @@ export const LanguageProvider = ({ children }) => {
       recentTranslations: 'Recent Translations',
       chatSessions: 'Chat Sessions',
       legalArticles: 'Legal Articles',
-      welcome: 'Welcome to Astraea',
+      welcome: 'Welcome to LACBot',
       welcomeDesc: 'Your AI-powered Philippine legal assistant',
       noDocuments: 'No documents uploaded yet',
       uploadHere: 'Upload your first document',
@@ -52,7 +52,7 @@ export const LanguageProvider = ({ children }) => {
       
     },
     tl: {
-      appName: 'Astraea',
+      appName: 'LACBot',
       tagline: 'Legal Awareness Support System',
       dashboard: 'Dashboard',
       documents: 'Mga Dokumento',
@@ -65,7 +65,7 @@ export const LanguageProvider = ({ children }) => {
       recentTranslations: 'Kamakailang Pagsasalin',
       chatSessions: 'Mga Chat Session',
       legalArticles: 'Mga Artikulo ng Batas',
-      welcome: 'Maligayang pagdating sa Astraea',
+      welcome: 'Maligayang pagdating sa LACBot',
       welcomeDesc: 'Ang iyong AI-powered na tulong legal ng Pilipinas',
       noDocuments: 'Walang naka-upload na dokumento',
       uploadHere: 'Mag-upload ng iyong unang dokumento',

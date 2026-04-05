@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import PyPDF2
 import io
 from langdetect import detect, DetectorFactory
-from groq import Groq
+
 
 # Configure logging
 logging.basicConfig(
@@ -38,8 +38,6 @@ app = FastAPI()
 # Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
-# Initialize Emergent LLM Key
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 # ==================== MODELS ====================
 
 class TranslationRequest(BaseModel):
@@ -312,10 +310,10 @@ async def legal_chat(
 ):
     try:
         session_id = session_id or str(uuid.uuid4())
-        
-        # Build message
+
+        # Build message text
         message_text = message
-        
+
         # If file is attached, extract its content
         if file:
             content = await file.read()
@@ -323,23 +321,79 @@ async def legal_chat(
                 file_text = await extract_text_from_pdf(content)
             else:
                 file_text = content.decode('utf-8')
-            message_text = f"Document content:\n{file_text}\n\nQuestion: {message}"
-        
-        if context:
-            message_text = f"Context: {context}\n\nQuestion: {message_text}"
-        
-        # Call Groq API
-        groq_client = Groq(api_key=GROQ_API_KEY)
-        completion = groq_client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[
-                {"role": "system", "content": "You are a knowledgeable Philippine legal assistant. Provide accurate, helpful legal information while clearly stating you are not providing legal advice. Reference relevant Philippine laws when applicable. Be professional and clear."},
-                {"role": "user", "content": message_text}
-            ],
-            max_tokens=1024
-        )
-        response = completion.choices[0].message.content
-        
+            message_text = f"{message} {file_text}"
+
+        # Stopwords for English and Tagalog
+        stopwords_en = {"a", "an", "the", "is", "are", "was", "were", "what", "who",
+                        "how", "when", "where", "why", "can", "could", "would", "should",
+                        "do", "does", "did", "i", "me", "my", "we", "you", "your", "it",
+                        "about", "and", "or", "of", "in", "on", "at", "to", "for", "with",
+                        "tell", "know", "please", "help", "explain", "give", "want", "need"}
+        stopwords_tl = {"ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya",
+                        "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino",
+                        "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung",
+                        "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede"}
+
+        all_stopwords = stopwords_en | stopwords_tl
+        keywords = [
+            word.lower() for word in message_text.split()
+            if word.lower() not in all_stopwords and len(word) > 2
+        ]
+
+        if not keywords:
+            keywords = [w.lower() for w in message_text.split() if len(w) > 2]
+
+        # Search database using keywords
+        or_conditions = []
+        for keyword in keywords:
+            or_conditions.extend([
+                {"title": {"$regex": keyword, "$options": "i"}},
+                {"content": {"$regex": keyword, "$options": "i"}},
+                {"tags": {"$regex": keyword, "$options": "i"}},
+                {"category": {"$regex": keyword, "$options": "i"}}
+            ])
+
+        if or_conditions:
+            matched_laws = await db.legal_knowledge.find(
+                {"$or": or_conditions}, {"_id": 0}
+            ).limit(3).to_list(3)
+        else:
+            matched_laws = []
+
+        # If no matches, return all available laws
+        if not matched_laws:
+            all_laws = await db.legal_knowledge.find({}, {"_id": 0}).to_list(50)
+            if all_laws:
+                law_list = "\n".join([f"• {law['title']} ({law['category']})" for law in all_laws])
+                response = (
+                    f"I could not find a specific law matching your question. "
+                    f"Here are all the available legal articles in our database:\n\n"
+                    f"{law_list}\n\n"
+                    f"Please note that this system provides legal awareness information only "
+                    f"and is not a substitute for professional legal advice."
+                )
+            else:
+                response = (
+                    "I could not find any legal articles in the database. "
+                    "Please contact the administrator to add legal knowledge. "
+                    "Note that this system provides legal awareness information only "
+                    "and is not a substitute for professional legal advice."
+                )
+        else:
+            # Build response from matched laws
+            response_parts = ["Based on your question, here are the relevant Philippine laws:\n"]
+            for law in matched_laws:
+                response_parts.append(
+                    f"📌 {law['title']} ({law['category']})\n"
+                    f"{law['content']}\n"
+                    f"Tags: {', '.join(law['tags'])}\n"
+                )
+            response_parts.append(
+                "\nPlease note that this system provides legal awareness information only "
+                "and is not a substitute for professional legal advice."
+            )
+            response = "\n".join(response_parts)
+
         # Save chat history
         chat_record = {
             "id": str(uuid.uuid4()),
@@ -350,7 +404,7 @@ async def legal_chat(
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.chat_history.insert_one(chat_record)
-        
+
         return ChatResponse(
             response=response,
             session_id=session_id
@@ -393,6 +447,60 @@ async def search_legal_knowledge(q: Optional[str] = None, category: Optional[str
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# Add Legal Knowledge (manual entry)
+@api_router.post("/legal-knowledge")
+async def add_legal_knowledge(law: LegalKnowledge):
+    try:
+        law_dict = law.dict()
+        law_dict['created_at'] = datetime.now(timezone.utc).isoformat()
+        # Remove _id if present
+        law_dict.pop('_id', None)
+        await db.legal_knowledge.insert_one(law_dict)
+        return {"message": "Law added successfully", "id": law_dict['id']}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Add Legal Knowledge via file upload (PDF or text)
+@api_router.post("/legal-knowledge/upload")
+async def upload_legal_knowledge(
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    category: str = Form(...),
+    tags: str = Form(...),
+    language: str = Form(...)
+):
+    try:
+        content = await file.read()
+
+        # Extract text based on file type
+        if file.filename.endswith('.pdf'):
+            text_content = await extract_text_from_pdf(content)
+        elif file.filename.endswith('.txt'):
+            text_content = content.decode('utf-8')
+        else:
+            raise HTTPException(status_code=400, detail="Only PDF and text files are supported")
+
+        if not text_content.strip():
+            raise HTTPException(status_code=400, detail="Could not extract text from file")
+
+        # Create law record
+        law = {
+            "id": str(uuid.uuid4()),
+            "title": title,
+            "category": category,
+            "content": text_content,
+            "tags": [t.strip() for t in tags.split(',') if t.strip()],
+            "language": language,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        await db.legal_knowledge.insert_one(law)
+        return {"message": "Legal knowledge uploaded successfully", "id": law["id"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Get Statistics
 @api_router.get("/stats")
 async def get_stats():
@@ -408,6 +516,19 @@ async def get_stats():
             "chat_sessions": chat_sessions,
             "legal_articles": laws_count
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Delete Legal Knowledge
+@api_router.delete("/legal-knowledge/{law_id}")
+async def delete_legal_knowledge(law_id: str):
+    try:
+        result = await db.legal_knowledge.delete_one({"id": law_id})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Law not found")
+        return {"message": "Law deleted successfully"}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
