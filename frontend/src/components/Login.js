@@ -15,7 +15,7 @@ const Login = ({ onLogin }) => {
           </div>
           <CardTitle className="text-3xl font-serif font-bold text-primary"> LACBot </CardTitle>
           <CardDescription className="text-sm text-muted-foreground">
-            Legal Awareness Support System
+            Legal Awareness Chat Bot 
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4 pt-4">
