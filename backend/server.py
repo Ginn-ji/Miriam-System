@@ -13,15 +13,15 @@ from datetime import datetime, timezone
 import PyPDF2
 import io
 from langdetect import detect, DetectorFactory
-
+import Levenshtein
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+from rank_bm25 import BM25Okapi
 
 # Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
-
 DetectorFactory.seed = 0
 
 ROOT_DIR = Path(__file__).parent
@@ -32,64 +32,49 @@ mongo_url = os.environ['MONGO_URL']
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ['DB_NAME']]
 
-# Create the main app without a prefix
 app = FastAPI()
-
-# Create a router with the /api prefix
 api_router = APIRouter(prefix="/api")
 
 # ==================== MODELS ====================
 
-class TranslationRequest(BaseModel):
-    text: str
-    source_language: str = "auto"
-    target_language: str
-
-class TranslationResponse(BaseModel):
-    original_text: str
-    translated_text: str
-    source_language: str
-    target_language: str
-    detected_language: Optional[str] = None
-
-class DocumentUpload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
+class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    filename: str
-    content: str
-    document_type: str
-    language: str
-    tags: List[str] = Field(default_factory=list)
+    username: str
+    password: str
+    role: str = "user"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-class ChatMessage(BaseModel):
-    role: str
-    content: str
+class LoginRequest(BaseModel):
+    username: str
+    password: str
 
-class ChatRequest(BaseModel):
-    message: str
-    session_id: Optional[str] = None
-    context: Optional[str] = None
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "user"
+    current_user_role: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
     session_id: str
+    laws: Optional[List[dict]] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 class LegalKnowledge(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    article: Optional[str] = None
     title: str
-    category: str
-    content: str
+    category: str = "Labor Law"
+    simplified_text: str
+    chunks: List[str]
     tags: List[str]
-    language: str
+    language: str = "en"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 # ==================== HELPER FUNCTIONS ====================
 
 async def extract_text_from_pdf(file_content: bytes) -> str:
-    """Extract text from PDF file"""
     try:
         pdf_file = io.BytesIO(file_content)
         pdf_reader = PyPDF2.PdfReader(pdf_file)
@@ -100,206 +85,67 @@ async def extract_text_from_pdf(file_content: bytes) -> str:
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Error extracting PDF: {str(e)}")
 
-def detect_language_simple(text: str) -> str:
-    """Detect language using langdetect"""
-    try:
-        lang = detect(text[:1000])  # Use first 1000 chars for detection
-        return lang
-    except:
-        return "unknown"
+async def initialize_admin_user():
+    count = await db.users.count_documents({})
+    if count == 0:
+        default_admin = {
+            "id": str(uuid.uuid4()), "username": "admin", "password": "adminpassword",
+            "role": "admin", "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.users.insert_one(default_admin)
 
 async def initialize_legal_knowledge():
-    """Initialize mock Philippine legal database"""
     count = await db.legal_knowledge.count_documents({})
-    if count > 0:
-        return
+    if count > 0: return
     
-    mock_laws = [
-        {
-            "id": str(uuid.uuid4()),
-            "title": "Civil Code of the Philippines - Article 19",
-            "category": "Civil Law",
-            "content": "Every person must, in the exercise of his rights and in the performance of his duties, act with justice, give everyone his due, and observe honesty and good faith.",
-            "tags": ["civil law", "rights", "duties", "good faith"],
-            "language": "en",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "title": "Labor Code - Article 279",
-            "category": "Labor Law",
-            "content": "In cases of regular employment, the employer shall not terminate the services of an employee except for a just cause or when authorized by law.",
-            "tags": ["labor", "employment", "termination", "just cause"],
-            "language": "en",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "title": "Republic Act 8353 - Anti-Rape Law",
-            "category": "Criminal Law",
-            "content": "Rape is committed by a man who shall have carnal knowledge of a woman through force, threat, or intimidation.",
-            "tags": ["criminal law", "rape", "sexual crimes"],
-            "language": "en",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "title": "Family Code - Article 1",
-            "category": "Family Law",
-            "content": "Marriage is a special contract of permanent union between a man and a woman entered into in accordance with law for the establishment of conjugal and family life.",
-            "tags": ["family law", "marriage", "conjugal rights"],
-            "language": "en",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "title": "Data Privacy Act of 2012",
-            "category": "Privacy Law",
-            "content": "It is the policy of the State to protect the fundamental human right of privacy while ensuring free flow of information to promote innovation and growth.",
-            "tags": ["privacy", "data protection", "personal information"],
-            "language": "en",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        },
-        {
-            "id": str(uuid.uuid4()),
-            "title": "Batas Sibil ng Pilipinas - Artikulo 19",
-            "category": "Batas Sibil",
-            "content": "Ang bawat tao ay dapat, sa paggamit ng kanyang mga karapatan at sa pagtupad ng kanyang mga tungkulin, kumilos nang may katarungan, bigyan ang bawat isa ng kanyang karapatdapat, at sundin ang katapatan at mabuting pananampalataya.",
-            "tags": ["batas sibil", "karapatan", "tungkulin", "mabuting pananampalataya"],
-            "language": "tl",
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-    ]
-    
-    await db.legal_knowledge.insert_many(mock_laws)
+    mock_law = {
+        "id": str(uuid.uuid4()),
+        "article": "Art. 211",
+        "title": "Declaration of Policy",
+        "category": "Labor Law",
+        "simplified_text": "The government protects your right to form unions, bargain fairly with employers, and settle disputes peacefully without unfair interference.",
+        "chunks": [
+            "To promote and emphasize the primacy of free collective bargaining and negotiations, including voluntary arbitration, mediation and conciliation, as modes of settling labor or industrial disputes;",
+            "To promote free trade unionism as an instrument for the enhancement of democracy and the promotion of social justice and development;",
+            "To foster the free and voluntary organization of a strong and united labor movement;",
+            "To promote the enlightenment of workers concerning their rights and obligations as union members and as employees;",
+            "To provide an adequate administrative machinery for the expeditious settlement of labor or industrial disputes;",
+            "To ensure a stable but dynamic and just industrial peace; and",
+            "To ensure the participation of workers in decision and policy-making processes affecting their rights, duties and welfare.",
+            "To encourage a truly democratic method of regulating the relations between the employers and employees by means of agreements freely entered into through collective bargaining..."
+        ],
+        "tags": ["union", "rights", "collective bargaining", "policy", "disputes"],
+        "language": "en",
+        "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.legal_knowledge.insert_one(mock_law)
 
-# ==================== ROUTES ====================
+# ==================== AUTH ROUTES ====================
+
+@api_router.post("/login")
+async def login(request: LoginRequest):
+    user = await db.users.find_one({"username": request.username, "password": request.password}, {"_id": 0})
+    if not user: raise HTTPException(status_code=401, detail="Invalid credentials")
+    return user
+
+@api_router.post("/users/register")
+async def register_user(request: RegisterRequest):
+    if request.role == "admin" and request.current_user_role != "admin":
+        raise HTTPException(status_code=403, detail="Only admins can create admin accounts")
+    existing = await db.users.find_one({"username": request.username})
+    if existing: raise HTTPException(status_code=400, detail="Username already exists")
+    new_user = {
+        "id": str(uuid.uuid4()), "username": request.username, "password": request.password, 
+        "role": request.role, "created_at": datetime.now(timezone.utc).isoformat()
+    }
+    await db.users.insert_one(new_user)
+    return {"message": "User registered successfully", "id": new_user["id"], "username": request.username, "role": request.role}
+
+# ==================== CORE ROUTES ====================
 
 @api_router.get("/")
-async def root():
-    return {"message": "Miriam Legal Assistance API"}
+async def root(): return {"message": "Miriam Legal Assistance API"}
 
-# Language Detection
-@api_router.post("/detect-language")
-async def detect_language_endpoint(request: dict):
-    try:
-        text = request.get("text", "")
-        if not text:
-            raise HTTPException(status_code=400, detail="Text is required")
-        
-        detected = detect_language_simple(text)
-        return {
-            "detected_language": detected,
-            "confidence": 0.9 if detected != "unknown" else 0.0
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Translation (Placeholder - can be activated with Google API keys)
-@api_router.post("/translate", response_model=TranslationResponse)
-async def translate_text(request: TranslationRequest):
-    try:
-        # Detect source language if auto
-        source_lang = request.source_language
-        if source_lang == "auto":
-            source_lang = detect_language_simple(request.text)
-        
-        # For now, return placeholder translation
-        # When Google API keys are added, this will use actual translation
-        translated = f"[Translation from {source_lang} to {request.target_language}]: {request.text}"
-        
-        # Save translation history
-        translation_record = {
-            "id": str(uuid.uuid4()),
-            "original_text": request.text,
-            "translated_text": translated,
-            "source_language": source_lang,
-            "target_language": request.target_language,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        await db.translations.insert_one(translation_record)
-        
-        return TranslationResponse(
-            original_text=request.text,
-            translated_text=translated,
-            source_language=source_lang,
-            target_language=request.target_language,
-            detected_language=source_lang if request.source_language == "auto" else None
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Get Translation History
-@api_router.get("/translations")
-async def get_translations(limit: int = 20):
-    try:
-        translations = await db.translations.find({}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
-        return {"translations": translations}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Document Upload
-@api_router.post("/documents/upload")
-async def upload_document(file: UploadFile = File(...)):
-    try:
-        content = await file.read()
-        
-        # Extract text based on file type
-        if file.filename.endswith('.pdf'):
-            text_content = await extract_text_from_pdf(content)
-            doc_type = "pdf"
-        else:
-            text_content = content.decode('utf-8')
-            doc_type = "text"
-        
-        # Detect language
-        language = detect_language_simple(text_content)
-        
-        # Create document record
-        doc = {
-            "id": str(uuid.uuid4()),
-            "filename": file.filename,
-            "content": text_content,
-            "document_type": doc_type,
-            "language": language,
-            "tags": [],
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        
-        await db.documents.insert_one(doc)
-        
-        return {
-            "id": doc["id"],
-            "filename": doc["filename"],
-            "language": language,
-            "message": "Document uploaded successfully"
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Get Documents
-@api_router.get("/documents")
-async def get_documents(limit: int = 20):
-    try:
-        documents = await db.documents.find({}, {"_id": 0, "content": 0}).sort("created_at", -1).limit(limit).to_list(limit)
-        return {"documents": documents}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Get Single Document
-@api_router.get("/documents/{document_id}")
-async def get_document(document_id: str):
-    try:
-        document = await db.documents.find_one({"id": document_id}, {"_id": 0})
-        if not document:
-            raise HTTPException(status_code=404, detail="Document not found")
-        return document
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Legal Chat with Claude Sonnet
 @api_router.post("/chat", response_model=ChatResponse)
 async def legal_chat(
     message: str = Form(...),
@@ -310,244 +156,204 @@ async def legal_chat(
 ):
     try:
         session_id = session_id or str(uuid.uuid4())
-
-        # Build message text
         message_text = message
 
-        # If file is attached, extract its content
         if file:
             content = await file.read()
-            if file.filename.endswith('.pdf'):
-                file_text = await extract_text_from_pdf(content)
-            else:
-                file_text = content.decode('utf-8')
+            file_text = await extract_text_from_pdf(content) if file.filename.endswith('.pdf') else content.decode('utf-8')
             message_text = f"{message} {file_text}"
 
-        # Stopwords for English and Tagalog
-        stopwords_en = {"a", "an", "the", "is", "are", "was", "were", "what", "who",
-                        "how", "when", "where", "why", "can", "could", "would", "should",
-                        "do", "does", "did", "i", "me", "my", "we", "you", "your", "it",
-                        "about", "and", "or", "of", "in", "on", "at", "to", "for", "with",
-                        "tell", "know", "please", "help", "explain", "give", "want", "need"}
-        stopwords_tl = {"ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya",
-                        "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino",
-                        "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung",
-                        "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede"}
+        all_laws = await db.legal_knowledge.find({}, {"_id": 0}).to_list(1000)
+        
+        if not all_laws:
+            response = "I could not find any labor laws in the database. Please contact the administrator."
+            await db.chat_history.insert_one({"id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, "user_message": message, "assistant_response": response, "laws": [], "created_at": datetime.now(timezone.utc).isoformat()})
+            return ChatResponse(response=response, session_id=session_id, laws=[])
 
-        all_stopwords = stopwords_en | stopwords_tl
-        keywords = [
-            word.lower() for word in message_text.split()
-            if word.lower() not in all_stopwords and len(word) > 2
-        ]
+        corpus = []
+        tokenized_corpus = []
+        for law in all_laws:
+            # Safely grab fields
+            article = law.get('article', '')
+            title = law.get('title', '')
+            category = law.get('category', '') # ADDED CATEGORY
+            body_text = " ".join(law.get('chunks', [])) if law.get('chunks') else law.get('content', '')
+            tags = " ".join(law.get('tags', []))
+            
+            # Combine everything into one string, NOW INCLUDING CATEGORY
+            doc_text = f"{article} {title} {category} {body_text} {tags}".lower()
+            
+            corpus.append(doc_text)
+            tokenized_corpus.append(doc_text.split())
 
-        if not keywords:
-            keywords = [w.lower() for w in message_text.split() if len(w) > 2]
-
-        # Search database using keywords
-        or_conditions = []
-        for keyword in keywords:
-            or_conditions.extend([
-                {"title": {"$regex": keyword, "$options": "i"}},
-                {"content": {"$regex": keyword, "$options": "i"}},
-                {"tags": {"$regex": keyword, "$options": "i"}},
-                {"category": {"$regex": keyword, "$options": "i"}}
-            ])
-
-        if or_conditions:
-            matched_laws = await db.legal_knowledge.find(
-                {"$or": or_conditions}, {"_id": 0}
-            ).limit(3).to_list(3)
-        else:
-            matched_laws = []
-
-        # If no matches, return all available laws
-        if not matched_laws:
-            all_laws = await db.legal_knowledge.find({}, {"_id": 0}).to_list(50)
-            if all_laws:
-                law_list = "\n".join([f"• {law['title']} ({law['category']})" for law in all_laws])
-                response = (
-                    f"I could not find a specific law matching your question. "
-                    f"Here are all the available legal articles in our database:\n\n"
-                    f"{law_list}\n\n"
-                    f"Please note that this system provides legal awareness information only "
-                    f"and is not a substitute for professional legal advice."
-                )
+        vocabulary = set([word for doc in tokenized_corpus for word in doc])
+        stopwords = {"ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "at", "to", "for", "with"}
+        
+        # REMOVED the len(w) > 2 restriction so numbers like "1" and "2" are kept!
+        raw_tokens = [w.lower() for w in message_text.split() if w.lower() not in stopwords]
+        corrected_tokens = []
+        
+        for token in raw_tokens:
+            if token in vocabulary:
+                corrected_tokens.append(token)
             else:
-                response = (
-                    "I could not find any legal articles in the database. "
-                    "Please contact the administrator to add legal knowledge. "
-                    "Note that this system provides legal awareness information only "
-                    "and is not a substitute for professional legal advice."
-                )
+                closest_word = min(vocabulary, key=lambda v: Levenshtein.distance(token, v), default=token)
+                corrected_tokens.append(closest_word if Levenshtein.distance(token, closest_word) <= 2 else token)
+        
+        corrected_query = " ".join(corrected_tokens)
+        if not corrected_query.strip():
+            corrected_query = message_text.lower()
+            corrected_tokens = corrected_query.split()
+
+        vectorizer = TfidfVectorizer()
+        tfidf_matrix = vectorizer.fit_transform(corpus)
+        query_vec = vectorizer.transform([corrected_query])
+        cosine_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
+
+        bm25 = BM25Okapi(tokenized_corpus)
+        bm25_scores = bm25.get_scores(corrected_tokens)
+
+        max_bm25 = max(bm25_scores) if max(bm25_scores) > 0 else 1
+        normalized_bm25 = [score / max_bm25 for score in bm25_scores]
+        final_scores = (cosine_scores * 0.5) + (np.array(normalized_bm25) * 0.5)
+
+        top_indices = np.argsort(final_scores)[::-1][:3]
+        matched_laws = []
+        
+        for idx in top_indices:
+            if final_scores[idx] > 0.05:
+                law = all_laws[idx]
+                # Find the specific chunk that matches best
+                best_chunk = ""
+                highest_overlap = -1
+                query_set = set(corrected_tokens)
+                for chunk in law.get('chunks', []):
+                    chunk_tokens = set(chunk.lower().split())
+                    overlap = len(query_set.intersection(chunk_tokens))
+                    if overlap > highest_overlap:
+                        highest_overlap = overlap
+                        best_chunk = chunk
+                law['best_match_chunk'] = best_chunk if best_chunk else (law.get('chunks', [""])[0] if law.get('chunks') else "")
+                matched_laws.append(law)
+
+        if not matched_laws:
+            response = "I could not find a specific labor law matching your question in our database. Please note that this system provides legal awareness information only and is not a substitute for professional legal advice."
         else:
-            # Build response from matched laws
-            response_parts = ["Based on your question, here are the relevant Philippine laws:\n"]
+            response_parts = ["Based on your query, here are the most relevant Philippine Labor Laws:\n"]
             for law in matched_laws:
+                # Safely grab the chunks and format them nicely, or fall back to old content
+                body_text = "\n• ".join(law.get('chunks', [])) if law.get('chunks') else law.get('content', '')
+                
                 response_parts.append(
-                    f"📌 {law['title']} ({law['category']})\n"
-                    f"{law['content']}\n"
-                    f"Tags: {', '.join(law['tags'])}\n"
+                    f"📌 {law.get('article', '')} {law.get('title', '')}\nSimplified: {law.get('simplified_text', '')}\n\n• {body_text}\n"
                 )
-            response_parts.append(
-                "\nPlease note that this system provides legal awareness information only "
-                "and is not a substitute for professional legal advice."
-            )
+            response_parts.append("\nPlease note that this system provides legal awareness information only and is not a substitute for professional legal advice.")
             response = "\n".join(response_parts)
 
-        # Save chat history
         chat_record = {
-            "id": str(uuid.uuid4()),
-            "session_id": session_id,
-            "user_message": message,
-            "assistant_response": response,
-            "context": context,
-            "created_at": datetime.now(timezone.utc).isoformat()
+            "id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, 
+            "user_message": message, "assistant_response": response, "laws": matched_laws,
+            "context": context, "created_at": datetime.now(timezone.utc).isoformat()
         }
         await db.chat_history.insert_one(chat_record)
 
-        return ChatResponse(
-            response=response,
-            session_id=session_id
-        )
+        return ChatResponse(response=response, session_id=session_id, laws=matched_laws)
 
     except Exception as e:
-        logger.error(f"General error: {str(e)}", exc_info=True)
+        logger.error(f"Chat error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"General error: {str(e)}")
 
-# Get Chat History
+@api_router.get("/chat/sessions")
+async def get_user_sessions(user_id: str):
+    try:
+        pipeline = [
+            {"$match": {"user_id": user_id}},
+            {"$sort": {"created_at": -1}},
+            {"$group": {"_id": "$session_id", "last_message": {"$first": "$user_message"}, "timestamp": {"$first": "$created_at"}}},
+            {"$sort": {"timestamp": -1}}
+        ]
+        sessions = await db.chat_history.aggregate(pipeline).to_list(100)
+        return {"sessions": sessions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @api_router.get("/chat/sessions/{session_id}")
 async def get_chat_history(session_id: str):
     try:
-        messages = await db.chat_history.find(
-            {"session_id": session_id},
-            {"_id": 0}
-        ).sort("created_at", 1).to_list(100)
+        messages = await db.chat_history.find({"session_id": session_id}, {"_id": 0}).sort("created_at", 1).to_list(100)
         return {"messages": messages}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Search Legal Knowledge
-@api_router.get("/legal-knowledge")
-async def search_legal_knowledge(q: Optional[str] = None, category: Optional[str] = None, language: Optional[str] = None):
-    try:
-        query = {}
-        if q:
-            query["$or"] = [
-                {"title": {"$regex": q, "$options": "i"}},
-                {"content": {"$regex": q, "$options": "i"}},
-                {"tags": {"$regex": q, "$options": "i"}}
-            ]
-        if category:
-            query["category"] = category
-        if language:
-            query["language"] = language
-        
-        laws = await db.legal_knowledge.find(query, {"_id": 0}).limit(50).to_list(50)
-        return {"laws": laws}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ==================== ADMIN DASHBOARD ROUTES ====================
 
-# Add Legal Knowledge (manual entry)
-@api_router.post("/legal-knowledge")
-async def add_legal_knowledge(law: LegalKnowledge):
-    try:
-        law_dict = law.dict()
-        law_dict['created_at'] = datetime.now(timezone.utc).isoformat()
-        # Remove _id if present
-        law_dict.pop('_id', None)
-        await db.legal_knowledge.insert_one(law_dict)
-        return {"message": "Law added successfully", "id": law_dict['id']}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Add Legal Knowledge via file upload (PDF or text)
-@api_router.post("/legal-knowledge/upload")
-async def upload_legal_knowledge(
-    file: UploadFile = File(...),
-    title: str = Form(...),
-    category: str = Form(...),
-    tags: str = Form(...),
-    language: str = Form(...)
-):
-    try:
-        content = await file.read()
-
-        # Extract text based on file type
-        if file.filename.endswith('.pdf'):
-            text_content = await extract_text_from_pdf(content)
-        elif file.filename.endswith('.txt'):
-            text_content = content.decode('utf-8')
-        else:
-            raise HTTPException(status_code=400, detail="Only PDF and text files are supported")
-
-        if not text_content.strip():
-            raise HTTPException(status_code=400, detail="Could not extract text from file")
-
-        # Create law record
-        law = {
-            "id": str(uuid.uuid4()),
-            "title": title,
-            "category": category,
-            "content": text_content,
-            "tags": [t.strip() for t in tags.split(',') if t.strip()],
-            "language": language,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-
-        await db.legal_knowledge.insert_one(law)
-        return {"message": "Legal knowledge uploaded successfully", "id": law["id"]}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Get Statistics
 @api_router.get("/stats")
 async def get_stats():
     try:
-        docs_count = await db.documents.count_documents({})
-        translations_count = await db.translations.count_documents({})
         chat_sessions = len(await db.chat_history.distinct("session_id"))
         laws_count = await db.legal_knowledge.count_documents({})
-        
-        return {
-            "documents": docs_count,
-            "translations": translations_count,
-            "chat_sessions": chat_sessions,
-            "legal_articles": laws_count
-        }
+        return {"documents": 0, "translations": 0, "chat_sessions": chat_sessions, "legal_articles": laws_count}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Delete Legal Knowledge
-@api_router.delete("/legal-knowledge/{law_id}")
-async def delete_legal_knowledge(law_id: str):
+@api_router.get("/legal-knowledge")
+async def get_all_laws():
+    """Fetches all laws to display in the Admin Knowledge Base table."""
     try:
-        result = await db.legal_knowledge.delete_one({"id": law_id})
-        if result.deleted_count == 0:
-            raise HTTPException(status_code=404, detail="Law not found")
-        return {"message": "Law deleted successfully"}
-    except HTTPException:
-        raise
+        laws = await db.legal_knowledge.find({}, {"_id": 0}).sort("article", 1).to_list(1000)
+        
+        # Format the data so the React frontend can read it without crashing
+        formatted_laws = []
+        for law in laws:
+            # Fix the Title to include the Article Number
+            if law.get('article'):
+                law['title'] = f"{law.get('article')} - {law.get('title', '')}"
+                
+            # Stitch the chunks back together so the dashboard table has a 'content' field to display
+            if law.get('chunks'):
+                law['content'] = "\n\n".join(law.get('chunks'))
+            elif not law.get('content'):
+                law['content'] = law.get('simplified_text', 'No content available.')
+                
+            formatted_laws.append(law)
+            
+        return {"laws": formatted_laws}
     except Exception as e:
+        logger.error(f"Error fetching legal knowledge: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# Include the router in the main app
-app.include_router(api_router)
+@api_router.get("/documents")
+async def get_recent_documents(limit: int = 5):
+    """Fetches the most recently added laws for the Admin Dashboard widget."""
+    try:
+        docs = await db.legal_knowledge.find({}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
+        
+        # Apply the exact same formatting fix for the recent documents widget
+        formatted_docs = []
+        for doc in docs:
+            if doc.get('article'):
+                doc['title'] = f"{doc.get('article')} - {doc.get('title', '')}"
+                
+            if doc.get('chunks'):
+                doc['content'] = "\n\n".join(doc.get('chunks'))
+            elif not doc.get('content'):
+                doc['content'] = doc.get('simplified_text', 'No content available.')
+                
+            formatted_docs.append(doc)
+            
+        return {"documents": formatted_docs}
+    except Exception as e:
+        logger.error(f"Error fetching documents: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_credentials=True,
-    allow_origins=os.environ.get('CORS_ORIGINS', '*').split(','),
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.include_router(api_router)
+app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.on_event("startup")
 async def startup_event():
+    await initialize_admin_user()
     await initialize_legal_knowledge()
-    logger.info("Miriam API Started")
+    logger.info("LACBot API Started")
 
 @app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
+async def shutdown_db_client(): client.close()
