@@ -17,10 +17,6 @@ export const LawResultCard = ({ lawData }) => {
         </h3>
       </div>
       <div className="p-0">
-        <div className="p-4 bg-blue-50/50 m-4 rounded border border-blue-100">
-          <p className="text-[10px] font-bold uppercase tracking-wider text-blue-600 mb-1">Simple Explanation:</p>
-          <p className="text-sm text-gray-700 leading-relaxed">{lawData.simplified_text}</p>
-        </div>
         {lawData.best_match_chunk && (
           <div className="px-4 pb-4">
             <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Relevant Section:</p>
