@@ -1,3 +1,5 @@
+from __future__ import annotations # MUST BE THE VERY FIRST LINE OF THE FILE
+from typing import List, Optional, Union, Any
 from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -18,6 +20,7 @@ import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
+import re
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -66,11 +69,18 @@ class LegalKnowledge(BaseModel):
     article: Optional[str] = None
     title: str
     category: str = "Labor Law"
-    simplified_text: str
-    chunks: List[str]
-    tags: List[str]
+    
+    # THE FIX: Make this optional so the frontend doesn't trigger a 422
+    simplified_text: Optional[str] = None 
+    
+    chunks: Optional[Union[List[str], str]] = None
+    content: Optional[str] = None 
+    tags: Union[List[str], str]
     language: str = "en"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: Optional[str] = None
+
+# Remember to keep this line!
+LegalKnowledge.model_rebuild()
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -144,7 +154,7 @@ async def register_user(request: RegisterRequest):
 # ==================== CORE ROUTES ====================
 
 @api_router.get("/")
-async def root(): return {"message": "Miriam Legal Assistance API"}
+async def root(): return {"message": "LACBot Legal Assistance API"}
 
 @api_router.post("/chat", response_model=ChatResponse)
 async def legal_chat(
@@ -173,26 +183,20 @@ async def legal_chat(
         corpus = []
         tokenized_corpus = []
         for law in all_laws:
-            # Safely grab fields
             article = law.get('article', '')
             title = law.get('title', '')
-            category = law.get('category', '') # ADDED CATEGORY
+            category = law.get('category', '')
             body_text = " ".join(law.get('chunks', [])) if law.get('chunks') else law.get('content', '')
             tags = " ".join(law.get('tags', []))
-            
-            # Combine everything into one string, NOW INCLUDING CATEGORY
             doc_text = f"{article} {title} {category} {body_text} {tags}".lower()
-            
             corpus.append(doc_text)
             tokenized_corpus.append(doc_text.split())
 
         vocabulary = set([word for doc in tokenized_corpus for word in doc])
         stopwords = {"ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "at", "to", "for", "with"}
         
-        # REMOVED the len(w) > 2 restriction so numbers like "1" and "2" are kept!
         raw_tokens = [w.lower() for w in message_text.split() if w.lower() not in stopwords]
         corrected_tokens = []
-        
         for token in raw_tokens:
             if token in vocabulary:
                 corrected_tokens.append(token)
@@ -217,13 +221,12 @@ async def legal_chat(
         normalized_bm25 = [score / max_bm25 for score in bm25_scores]
         final_scores = (cosine_scores * 0.5) + (np.array(normalized_bm25) * 0.5)
 
-        top_indices = np.argsort(final_scores)[::-1][:3]
-        matched_laws = []
+        top_indices = np.argsort(final_scores)[::-1][:5]
+        matched_laws = [all_laws[i] for i in top_indices if final_scores[i] > 0.20]
         
         for idx in top_indices:
             if final_scores[idx] > 0.05:
                 law = all_laws[idx]
-                # Find the specific chunk that matches best
                 best_chunk = ""
                 highest_overlap = -1
                 query_set = set(corrected_tokens)
@@ -237,18 +240,9 @@ async def legal_chat(
                 matched_laws.append(law)
 
         if not matched_laws:
-            response = "I could not find a specific labor law matching your question in our database. Please note that this system provides legal awareness information only and is not a substitute for professional legal advice."
+            response = "I could not find a specific labor law matching your question. Please try rephrasing your query."
         else:
-            response_parts = ["Based on your query, here are the most relevant Philippine Labor Laws:\n"]
-            for law in matched_laws:
-                # Safely grab the chunks and format them nicely, or fall back to old content
-                body_text = "\n• ".join(law.get('chunks', [])) if law.get('chunks') else law.get('content', '')
-                
-                response_parts.append(
-                    f"📌 {law.get('article', '')} {law.get('title', '')}\nSimplified: {law.get('simplified_text', '')}\n\n• {body_text}\n"
-                )
-            response_parts.append("\nPlease note that this system provides legal awareness information only and is not a substitute for professional legal advice.")
-            response = "\n".join(response_parts)
+            response = f"I found {len(matched_laws)} relevant articles from the Labor Code regarding your query:"
 
         chat_record = {
             "id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, 
@@ -298,49 +292,140 @@ async def get_stats():
 
 @api_router.get("/legal-knowledge")
 async def get_all_laws():
-    """Fetches all laws to display in the Admin Knowledge Base table."""
     try:
-        laws = await db.legal_knowledge.find({}, {"_id": 0}).sort("article", 1).to_list(1000)
+        # 1. Fetch data directly from MongoDB
+        laws = await db.legal_knowledge.find({}, {"_id": 0}).to_list(1000)
         
-        # Format the data so the React frontend can read it without crashing
-        formatted_laws = []
+        # 2. Simple formatting to make sure the frontend gets what it expects
         for law in laws:
-            # Fix the Title to include the Article Number
-            if law.get('article'):
-                law['title'] = f"{law.get('article')} - {law.get('title', '')}"
-                
-            # Stitch the chunks back together so the dashboard table has a 'content' field to display
-            if law.get('chunks'):
+            # Ensure article and title exist even if they are None in the DB
+            article = law.get('article') or ""
+            title = law.get('title') or "Untitled"
+            
+            # Combine Article and Title for the UI display
+            if article:
+                law['title'] = f"{article} - {title}"
+            else:
+                law['title'] = title
+            
+            # Safely handle content: Check chunks first, then content field
+            if law.get('chunks') and isinstance(law.get('chunks'), list):
                 law['content'] = "\n\n".join(law.get('chunks'))
             elif not law.get('content'):
-                law['content'] = law.get('simplified_text', 'No content available.')
-                
-            formatted_laws.append(law)
+                # Fallback if both are missing
+                law['content'] = law.get('simplified_text') or "No content available."
             
-        return {"laws": formatted_laws}
+            # Ensure tags is always a list so the frontend map() doesn't fail
+            if not isinstance(law.get('tags'), list):
+                law['tags'] = []
+
+        return {"laws": laws}
     except Exception as e:
         logger.error(f"Error fetching legal knowledge: {str(e)}")
+        # This will now tell you exactly which part of the data is causing issues
+        raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
+
+# 1. Add Legal Knowledge (manual entry)
+@api_router.post("/legal-knowledge")
+async def add_legal_knowledge(law: LegalKnowledge):
+    try:
+        law_dict = law.model_dump()
+        law_dict['created_at'] = datetime.now(timezone.utc).isoformat()
+
+        # ✅ FIX: prevent None crashes
+        law_dict['article'] = law_dict.get('article') or ""
+
+# ✅ FIX: ensure chunks always usable
+        if isinstance(law_dict.get('chunks'), str):
+            law_dict['chunks'] = [c.strip() for c in law_dict['chunks'].split('\n') if c.strip()]
+        elif law_dict.get('chunks') is None:
+            law_dict['chunks'] = []
+
+        # ✅ FIX: ensure tags always usable
+        if isinstance(law_dict.get('tags'), str):
+            law_dict['tags'] = [t.strip() for t in law_dict['tags'].split(',') if t.strip()]
+        elif law_dict.get('tags') is None:
+            law_dict['tags'] = []
+
+        law_dict.pop('_id', None)
+        await db.legal_knowledge.insert_one(law_dict)
+        return {"message": "Law added successfully", "id": law_dict['id']}
+    except Exception as e:
+        logger.error(f"Manual add error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 2. Add Legal Knowledge via file upload (PDF or text)
+@api_router.post("/legal-knowledge/upload")
+async def upload_legal_knowledge(
+    file: UploadFile = File(...),
+    title: str = Form(...),
+    category: str = Form(...),
+    tags: str = Form(...),
+    language: str = Form(...)
+):
+    try:
+        content = await file.read()
+
+        if file.filename.endswith('.pdf'):
+            text_content = await extract_text_from_pdf(content)
+        elif file.filename.endswith('.txt'):
+            text_content = content.decode('utf-8')
+        else:
+            raise HTTPException(status_code=400, detail="Only PDF and text files are supported")
+
+        if not text_content.strip():
+            raise HTTPException(status_code=400, detail="Could not extract text from file")
+
+        chunks = [c.strip() for c in text_content.split('\n') if c.strip()]
+
+        law = {
+            "id": str(uuid.uuid4()),
+            "article": "",  # ✅ prevent None crash
+            "title": title,
+            "category": category,
+            "content": text_content,
+            "simplified_text": text_content[:300],
+            "chunks": chunks,  # ✅ REQUIRED for search
+            "tags": [t.strip() for t in tags.split(',') if t.strip()],
+            "language": language,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+
+        await db.legal_knowledge.insert_one(law)
+        return {"message": "Legal knowledge uploaded successfully", "id": law["id"]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# 3. Delete Legal Knowledge
+@api_router.delete("/legal-knowledge/{law_id}")
+async def delete_legal_knowledge(law_id: str):
+    try:
+        result = await db.legal_knowledge.delete_one({"id": law_id})
+        if result.deleted_count == 0:
+            raise HTTPException(status_code=404, detail="Law not found")
+        return {"message": "Law deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.get("/documents")
 async def get_recent_documents(limit: int = 5):
-    """Fetches the most recently added laws for the Admin Dashboard widget."""
     try:
         docs = await db.legal_knowledge.find({}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
-        
-        # Apply the exact same formatting fix for the recent documents widget
         formatted_docs = []
         for doc in docs:
             if doc.get('article'):
                 doc['title'] = f"{doc.get('article')} - {doc.get('title', '')}"
-                
             if doc.get('chunks'):
                 doc['content'] = "\n\n".join(doc.get('chunks'))
             elif not doc.get('content'):
                 doc['content'] = doc.get('simplified_text', 'No content available.')
-                
             formatted_docs.append(doc)
-            
         return {"documents": formatted_docs}
     except Exception as e:
         logger.error(f"Error fetching documents: {str(e)}")
@@ -348,6 +433,7 @@ async def get_recent_documents(limit: int = 5):
 
 app.include_router(api_router)
 app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
 
 @app.on_event("startup")
 async def startup_event():
