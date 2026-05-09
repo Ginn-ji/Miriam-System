@@ -16,15 +16,17 @@ export const LawResultCard = ({ lawData }) => {
           {lawData.article ? `${lawData.article}: ${lawData.title}` : lawData.title}
         </h3>
       </div>
+
       <div className="p-0">
         {lawData.best_match_chunk && (
-          <div className="px-4 pb-4">
+          <div className="p-4">
             <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Relevant Section:</p>
             <div className="pl-3 border-l-4 border-gray-200 italic text-gray-500 text-sm">
               "{lawData.best_match_chunk}"
             </div>
           </div>
         )}
+
         <details className="group border-t border-gray-100">
           <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-widest list-none">
             <span>View Full Article</span>
@@ -61,14 +63,17 @@ export const LegalChat = ({ user }) => {
     if ((!input.trim() && !file) || loading) return;
     const userMessage = { role: 'user', content: input, fileName: file?.name };
     setMessages((prev) => [...prev, userMessage]);
+    
     const formData = new FormData();
     formData.append("message", input);
     formData.append("session_id", sessionId);
     if (file) formData.append("file", file);
     if (user && user.role !== 'guest') formData.append("user_id", user.id);
+    
     setInput('');
     setFile(null);
     setLoading(true);
+    
     try {
       const response = await apiClient.post('/chat', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
@@ -87,14 +92,12 @@ export const LegalChat = ({ user }) => {
   };
 
   return (
-    /* Changed h-[calc...] to h-full and min-h-[calc(100vh-120px)] to take up all vertical space */
     <div className="flex flex-col h-full min-h-[calc(100vh-120px)]">
       <div className="mb-4">
         <h1 className="text-4xl font-serif font-bold tracking-tight text-primary">Labor Law Retrieval</h1>
         <p className="text-muted-foreground mt-1">Ask LACBot questions related to Philippine Labor Law</p>
       </div>
 
-      {/* Added flex-1 to make the Card grow and fill all available space */}
       <Card className="flex-1 flex flex-col shadow-lg overflow-hidden border-gray-200 mb-2">
         <CardHeader className="border-b bg-white py-3">
           <CardTitle className="font-serif flex items-center gap-2 text-lg">
@@ -104,14 +107,16 @@ export const LegalChat = ({ user }) => {
         
         <CardContent className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50">
           {messages.map((msg, idx) => (
-            <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-              <div className={`max-w-[90%] w-full ${msg.role === 'user' ? 'bg-[#1e293b] text-white px-4 py-3 rounded-2xl rounded-tr-none shadow-sm ml-auto' : ''}`}>
+            <div key={idx} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+              <div className={`max-w-[90%] ${msg.role === 'user' ? 'w-fit bg-[#1e293b] text-white px-4 py-3 rounded-2xl rounded-tr-none shadow-sm' : 'w-full'}`}>
                 {msg.role === 'assistant' ? (
                    <p className="text-sm text-gray-800 leading-relaxed mb-2">{msg.content}</p>
                 ) : (
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 )}
+                
                 {msg.fileName && <p className="text-xs mt-1 opacity-70 italic">📎 Attached: {msg.fileName}</p>}
+                
                 {msg.role === 'assistant' && msg.laws && msg.laws.map((law, i) => (
                   <LawResultCard key={i} lawData={law} />
                 ))}

@@ -3,9 +3,75 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { Card, CardContent, CardHeader } from './ui/card';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { BookOpen, Search, ChevronDown, ChevronUp, Calendar, Tag } from 'lucide-react';
+import { BookOpen, Search, ChevronDown, ChevronUp, Calendar, Tag, Settings } from 'lucide-react';
 import apiClient from '../api/apiClient';
 import { toast } from 'sonner';
+
+export const AdminSettingsControl = () => {
+  const [chatLimit, setChatLimit] = useState(5);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    const fetchLimit = async () => {
+      try {
+        const response = await apiClient.get('/settings/chat-limit');
+        setChatLimit(response.data.limit);
+      } catch (error) {
+        console.error("Failed to load settings:", error);
+      }
+    };
+    fetchLimit();
+  }, []);
+
+  const handleSaveLimit = async () => {
+    setIsSaving(true);
+    try {
+      await apiClient.post('/settings/chat-limit', { 
+        new_limit: chatLimit 
+      });
+      toast.success(`Chat response limit updated to ${chatLimit}`);
+    } catch (error) {
+      toast.error('Failed to update system limit');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  return (
+    <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20">
+      <CardContent className="pt-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-primary/10 text-primary rounded-md">
+            <Settings className="h-5 w-5" />
+          </div>
+          <div>
+            <h3 className="font-semibold font-serif text-gray-900">System Configuration</h3>
+            <p className="text-xs text-muted-foreground">Manage how many laws the AI retrieves per chat.</p>
+          </div>
+        </div>
+        
+        <div className="flex items-center gap-3">
+          <label className="text-sm font-medium text-gray-700">Max Results:</label>
+          <input 
+            type="number" 
+            min="1" 
+            max="10" 
+            value={chatLimit}
+            onChange={(e) => setChatLimit(parseInt(e.target.value) || 1)}
+            className="w-16 p-1 border rounded-md text-center text-sm"
+          />
+          <button 
+            onClick={handleSaveLimit}
+            disabled={isSaving}
+            className="px-3 py-1.5 bg-primary text-primary-foreground text-xs rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50"
+          >
+            {isSaving ? 'Saving...' : 'Save Rule'}
+          </button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+};
 
 export const Knowledge = ({ user }) => {
   const { t } = useLanguage();
@@ -19,6 +85,7 @@ export const Knowledge = ({ user }) => {
   const [selectedLawToDelete, setSelectedLawToDelete] = useState('');
   const [uploadFile, setUploadFile] = useState(null);
   const [newLaw, setNewLaw] = useState({
+    article: '',
     title: '',
     category: 'Civil Law',
     content: '',
@@ -78,7 +145,7 @@ export const Knowledge = ({ user }) => {
       }
       setShowAddForm(false);
       setUploadFile(null);
-      setNewLaw({ title: '', category: 'Civil Law', content: '', tags: '', language: 'en' });
+      setNewLaw({ article: '', title: '', category: 'Civil Law', content: '', tags: '', language: 'en' });
       fetchLaws();
       toast.success('Legal article added successfully!');
     } catch (error) {
@@ -132,16 +199,26 @@ export const Knowledge = ({ user }) => {
         )}
       </div>
 
-      {/* Add Law Form - Admin Only */}
+      {user?.role === 'admin' && (
+        <AdminSettingsControl />
+      )}
+
       {showAddForm && user?.role === 'admin' && (
         <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)]">
           <CardContent className="pt-6 space-y-3">
             <h3 className="font-serif font-semibold">Add New Legal Article</h3>
+            
             <Input
-              placeholder="Title (e.g. Civil Code - Article 19)"
+              placeholder="Article Number (e.g., Art. 1)"
+              value={newLaw.article}
+              onChange={(e) => setNewLaw({...newLaw, article: e.target.value})}
+            />
+            <Input
+              placeholder="Title (e.g. Declaration of Policy)"
               value={newLaw.title}
               onChange={(e) => setNewLaw({...newLaw, title: e.target.value})}
             />
+            
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <Select value={newLaw.category} onValueChange={(val) => setNewLaw({...newLaw, category: val})}>
                 <SelectTrigger>
@@ -220,7 +297,7 @@ export const Knowledge = ({ user }) => {
                 onClick={() => {
                   setShowAddForm(false);
                   setUploadFile(null);
-                  setNewLaw({ title: '', category: 'Civil Law', content: '', tags: '', language: 'en' });
+                  setNewLaw({ article: '', title: '', category: 'Civil Law', content: '', tags: '', language: 'en' });
                 }}
                 className="px-4 py-2 bg-muted text-muted-foreground rounded-sm text-sm hover:bg-muted/80"
               >
@@ -231,7 +308,6 @@ export const Knowledge = ({ user }) => {
         </Card>
       )}
 
-      {/* Delete Law Form - Admin Only */}
       {showDeleteForm && user?.role === 'admin' && (
         <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-destructive/20">
           <CardContent className="pt-6 space-y-3">
@@ -267,7 +343,6 @@ export const Knowledge = ({ user }) => {
         </Card>
       )}
 
-      {/* Search and Filter */}
       <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)]">
         <CardHeader>
           <div className="flex flex-col md:flex-row gap-4">
