@@ -94,9 +94,36 @@ export const Knowledge = ({ user }) => {
   });
   const lawFileInputRef = useRef(null);
 
+// THE BULLETPROOF SEARCH HOOK
   useEffect(() => {
-    fetchLaws();
-  }, [selectedCategory, selectedLanguage]);
+    const triggerSearch = async () => {
+      try {
+        const params = {};
+        if (selectedCategory !== 'all') params.category = selectedCategory;
+        if (selectedLanguage !== 'all') params.language = selectedLanguage;
+        if (searchQuery) params.q = searchQuery;
+        
+        // 🚨 THIS LOG WILL PROVE REACT IS WORKING
+        console.log("🚨 FRONTEND SENDING TO BACKEND:", params); 
+        
+        const response = await apiClient.get('/legal-knowledge', { params });
+        
+        // 🚨 THIS LOG PROVES WHAT PYTHON RETURNED
+        console.log("🚨 BACKEND RETURNED:", response.data.laws.length, "laws"); 
+        
+        setLaws(response.data.laws || []);
+      } catch (error) {
+        console.error('🚨 SEARCH ERROR:', error);
+      }
+    };
+
+    // 300ms delay so it searches as you type
+    const delayDebounceFn = setTimeout(() => {
+      triggerSearch();
+    }, 300);
+
+    return () => clearTimeout(delayDebounceFn);
+  }, [searchQuery, selectedCategory, selectedLanguage]);
 
   const fetchLaws = async () => {
     try {
@@ -348,12 +375,15 @@ export const Knowledge = ({ user }) => {
           <div className="flex flex-col md:flex-row gap-4">
             <div className="flex-1 flex items-center gap-2">
               <Search className="h-5 w-5 text-muted-foreground" />
-              <Input
+              <input
+                type="text"
                 placeholder="Search legal knowledge..."
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleSearch()}
-                data-testid="knowledge-search-input"
+                onChange={(e) => {
+                  console.log("⌨️ KEY PRESSED:", e.target.value);
+                  setSearchQuery(e.target.value);
+                }}
+                className="flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
               />
             </div>
             <Select value={selectedCategory} onValueChange={setSelectedCategory}>

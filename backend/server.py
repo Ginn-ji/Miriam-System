@@ -19,6 +19,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 from langdetect import detect, DetectorFactory
+from deep_translator import GoogleTranslator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -145,43 +146,7 @@ async def update_chat_limit(request: ChatLimitRequest):
 
 @api_router.get("/")
 async def root():
-    return {"message": "SHIELD Legal Assistance API"}
-
-@api_router.post("/detect-language")
-async def detect_language_endpoint(request: dict):
-    try:
-        text = request.get("text", "")
-        if not text: raise HTTPException(status_code=400, detail="Text is required")
-        detected = detect_language_simple(text)
-        return {"detected_language": detected, "confidence": 0.9 if detected != "unknown" else 0.0}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.post("/translate", response_model=TranslationResponse)
-async def translate_text(request: TranslationRequest):
-    try:
-        source_lang = request.source_language
-        if source_lang == "auto": source_lang = detect_language_simple(request.text)
-        translated = f"[Translation from {source_lang} to {request.target_language}]: {request.text}"
-        
-        translation_record = {
-            "id": str(uuid.uuid4()), "original_text": request.text, "translated_text": translated,
-            "source_language": source_lang, "target_language": request.target_language,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        await db.translations.insert_one(translation_record)
-        return TranslationResponse(
-            original_text=request.text, translated_text=translated, source_language=source_lang,
-            target_language=request.target_language, detected_language=source_lang if request.source_language == "auto" else None
-        )
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.get("/translations")
-async def get_translations(limit: int = 20):
-    try:
-        translations = await db.translations.find({}, {"_id": 0}).sort("created_at", -1).limit(limit).to_list(limit)
-        return {"translations": translations}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    return {"message": "LACBot Legal Assistance API"}
 
 @api_router.post("/documents/upload")
 async def upload_document(file: UploadFile = File(...)):
@@ -222,9 +187,32 @@ async def get_document(document_id: str):
 # ==================== LEGAL KNOWLEDGE CRUD ====================
 
 @api_router.get("/legal-knowledge")
-async def get_all_laws():
+async def get_all_laws(
+    q: Optional[str] = None,
+    category: Optional[str] = None,
+    language: Optional[str] = None
+):
     try:
-        laws = await db.legal_knowledge.find({}, {"_id": 0}).to_list(1000)
+        db_query = {}
+        
+        if category and category.lower() != 'all':
+            # This regex allows "Labor Law" to match "Labor Law - Book 1", "Labor Law - Book 2", etc.
+            db_query['category'] = {"$regex": category, "$options": "i"}
+            
+        if language and language.lower() != 'all':
+            db_query['language'] = language
+            
+        if q:
+            search_regex = {"$regex": q, "$options": "i"}
+            db_query["$or"] = [
+                {"title": search_regex},
+                {"content": search_regex},
+                {"tags": search_regex},
+                {"chunks": search_regex}
+            ]
+
+        laws = await db.legal_knowledge.find(db_query, {"_id": 0}).to_list(1000)
+        
         for law in laws:
             article = law.get('article') or ""
             title = law.get('title') or "Untitled"
@@ -237,10 +225,13 @@ async def get_all_laws():
                 law['content'] = law.get('simplified_text') or "No content available."
             
             if not isinstance(law.get('tags'), list): law['tags'] = []
+            
         return {"laws": laws}
+        
     except Exception as e:
         logger.error(f"Error fetching legal knowledge: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Database Error: {str(e)}")
+
 
 @api_router.post("/legal-knowledge")
 async def add_legal_knowledge(law: LegalKnowledge):
@@ -374,6 +365,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             logger.warning(f"Could not fetch limit setting, using default 5. Error: {e}")
             chat_limit = 5
         
+ # 6. STRICTER THRESHOLD (Raised to 0.30)
         top_indices = np.argsort(final_scores)[::-1][:chat_limit]
         matched_laws = [all_laws[i] for i in top_indices if final_scores[i] > 0.30]
         
@@ -382,12 +374,45 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             law['best_match_chunk'] = max(law.get('chunks', []), key=lambda c: len(qs.intersection(set(c.lower().split()))), default="")
             
         if not matched_laws:
-            response = "I could not find a specific Philippine Labor Law matching your query. Ensure your question is related to employment, wages, or workplace policies."
+            base_response = "I could not find a specific Philippine Labor Law matching your query. Ensure your question is related to employment, wages, or workplace policies."
         else:
-            response = f"I found {len(matched_laws)} relevant articles regarding your query:"
+            base_response = f"I found {len(matched_laws)} relevant articles regarding your query:"
+
+        # ==========================================
+        # 7. POST-RETRIEVAL TRANSLATION (Output Localization)
+        # ==========================================
+        final_response = base_response
         
-        await db.chat_history.insert_one({"id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, "user_message": message, "assistant_response": response, "laws": matched_laws, "created_at": datetime.now(timezone.utc).isoformat()})
-        return ChatResponse(response=response, session_id=session_id, laws=matched_laws)
+        try:
+            # Check if the user's original raw message was in Tagalog
+            detected_lang = detect_language_simple(message)
+            if detected_lang in ['tl', 'unknown']:
+                
+                # 1. Translate the bot's greeting back to Tagalog
+                final_response = GoogleTranslator(source='en', target='tl').translate(base_response)
+                
+                # 2. Translate the "Relevant Section" chunk so the user understands the law!
+                for law in matched_laws:
+                    if law['best_match_chunk']:
+                        translated_chunk = GoogleTranslator(source='en', target='tl').translate(law['best_match_chunk'])
+                        # Overwrite it so the React frontend displays the Tagalog version automatically
+                        law['best_match_chunk'] = translated_chunk
+                        
+        except Exception as e:
+            logger.warning(f"Output translation failed: {e}")
+            
+        # Save to database and return to frontend using the final_response
+        await db.chat_history.insert_one({
+            "id": str(uuid.uuid4()), 
+            "session_id": session_id, 
+            "user_id": user_id, 
+            "user_message": message, 
+            "assistant_response": final_response, 
+            "laws": matched_laws, 
+            "created_at": datetime.now(timezone.utc).isoformat()
+        })
+        
+        return ChatResponse(response=final_response, session_id=session_id, laws=matched_laws)
         
     except Exception as e: 
         logger.error(f"CRITICAL CHAT ERROR: {str(e)}") 
