@@ -305,7 +305,23 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         }
         
         vocabulary = set([word for doc in tokenized_corpus for word in doc if word not in stopwords and len(word) > 2])
-        raw_tokens = [w.lower() for w in message_text.split() if len(w) > 2 and w.lower() not in stopwords]
+        
+        # ==========================================
+        # 1. PRE-RETRIEVAL TRANSLATION (The Missing Key)
+        # ==========================================
+        search_text = message_text
+        try:
+            detected_lang = detect_language_simple(message_text)
+            if detected_lang in ['tl', 'unknown']:
+                english_translation = GoogleTranslator(source='tl', target='en').translate(message_text)
+                # Combine Tagalog and English so the math engine searches BOTH
+                search_text = f"{message_text} {english_translation}"
+                logger.info(f"Expanded Search: {search_text}")
+        except Exception as e:
+            logger.warning(f"Pre-translation failed: {e}")
+
+        # Now we tokenize the COMBINED Taglish + English text
+        raw_tokens = [w.lower() for w in search_text.split() if len(w) > 2 and w.lower() not in stopwords]
         
         corrected_tokens = []
         for t in raw_tokens:
