@@ -40,3 +40,8 @@ black
 flake8
 isort
 mypy
+
+scikit-learn
+Levenshtein
+rank-bm25
+deep-translator
