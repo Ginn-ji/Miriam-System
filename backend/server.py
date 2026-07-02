@@ -20,6 +20,10 @@ from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 from langdetect import detect, DetectorFactory
 from deep_translator import GoogleTranslator
+from pydantic import BaseModel
+from fastapi import HTTPException
+from datetime import datetime, timezone
+import bcrypt
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -37,7 +41,6 @@ db = client[os.environ['DB_NAME']]
 
 app = FastAPI()
 api_router = APIRouter(prefix="/api")
-
 # ==================== MODELS ====================
 
 class User(BaseModel):
@@ -45,7 +48,7 @@ class User(BaseModel):
     username: str
     password: str
     role: str = "user"
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 class LoginRequest(BaseModel):
     username: str
@@ -383,7 +386,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         
  # 6. STRICTER THRESHOLD (Raised to 0.30)
         top_indices = np.argsort(final_scores)[::-1][:chat_limit]
-        matched_laws = [all_laws[i] for i in top_indices if final_scores[i] > 0.30]
+        matched_laws = [all_laws[i] for i in top_indices if final_scores[i] > 0.45]
         
         for law in matched_laws:
             qs = set(expanded_tokens)
@@ -449,6 +452,33 @@ async def login(request: LoginRequest):
     user = await db.users.find_one({"username": request.username, "password": request.password}, {"_id": 0})
     if not user: raise HTTPException(status_code=401, detail="Invalid credentials")
     return user
+
+@api_router.post("/users/register")
+async def register_user(user: User):
+    try:
+        # Check if the username is already taken
+        existing_user = await db.users.find_one({"username": user.username})
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already taken")
+
+        # Convert your Pydantic model directly into a dictionary
+        new_user_dict = user.model_dump()
+
+        # Save directly to MongoDB (Passwords will be visible and normal)
+        result = await db.users.insert_one(new_user_dict)
+
+        # Return the exact fields React needs to log the user in
+        return {
+            "message": "User registered successfully",
+            "id": new_user_dict["id"],
+            "username": new_user_dict["username"],
+            "role": new_user_dict["role"]
+        }
+        
+    except Exception as e:
+        if isinstance(e, HTTPException): raise e
+        logger.error(f"Registration error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 @api_router.get("/chat/sessions")
 async def get_user_sessions(user_id: str):

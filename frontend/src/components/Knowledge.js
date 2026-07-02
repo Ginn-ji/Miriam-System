@@ -38,7 +38,7 @@ export const AdminSettingsControl = () => {
   };
 
   return (
-    <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20">
+    <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20 mb-6">
       <CardContent className="pt-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-primary/10 text-primary rounded-md">
@@ -84,6 +84,10 @@ export const Knowledge = ({ user }) => {
   const [showDeleteForm, setShowDeleteForm] = useState(false);
   const [selectedLawToDelete, setSelectedLawToDelete] = useState('');
   const [uploadFile, setUploadFile] = useState(null);
+  
+  // 🚨 ADDED: State to hold the new admin info
+  const [newAdmin, setNewAdmin] = useState({ username: '', password: '' });
+  
   const [newLaw, setNewLaw] = useState({
     article: '',
     title: '',
@@ -94,7 +98,6 @@ export const Knowledge = ({ user }) => {
   });
   const lawFileInputRef = useRef(null);
 
-// THE BULLETPROOF SEARCH HOOK
   useEffect(() => {
     const triggerSearch = async () => {
       try {
@@ -103,21 +106,13 @@ export const Knowledge = ({ user }) => {
         if (selectedLanguage !== 'all') params.language = selectedLanguage;
         if (searchQuery) params.q = searchQuery;
         
-        // 🚨 THIS LOG WILL PROVE REACT IS WORKING
-        console.log("🚨 FRONTEND SENDING TO BACKEND:", params); 
-        
         const response = await apiClient.get('/legal-knowledge', { params });
-        
-        // 🚨 THIS LOG PROVES WHAT PYTHON RETURNED
-        console.log("🚨 BACKEND RETURNED:", response.data.laws.length, "laws"); 
-        
         setLaws(response.data.laws || []);
       } catch (error) {
         console.error('🚨 SEARCH ERROR:', error);
       }
     };
 
-    // 300ms delay so it searches as you type
     const delayDebounceFn = setTimeout(() => {
       triggerSearch();
     }, 300);
@@ -142,6 +137,25 @@ export const Knowledge = ({ user }) => {
 
   const toggleExpand = (id) => {
     setExpandedId(expandedId === id ? null : id);
+  };
+
+  // 🚨 ADDED: Function to create the new Admin
+  const handleCreateAdmin = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = {
+        username: newAdmin.username,
+        password: newAdmin.password,
+        role: 'admin', 
+        current_user_role: user?.role 
+      };
+
+      await apiClient.post('/users/register', payload);
+      toast.success('New Admin account successfully created!');
+      setNewAdmin({ username: '', password: '' }); 
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to create admin');
+    }
   };
 
   const handleAddLaw = async () => {
@@ -199,6 +213,22 @@ export const Knowledge = ({ user }) => {
 
   const categories = ['all', 'Civil Law', 'Labor Law', 'Criminal Law', 'Family Law', 'Privacy Law'];
 
+  // 🚨 ADDED: The Smart Numerical Sort
+  const sortedLaws = [...laws].sort((a, b) => {
+    const getNum = (str) => {
+      if (!str) return 999999;
+      const match = str.match(/\d+/);
+      return match ? parseInt(match[0], 10) : 999999;
+    };
+    
+    // Fallback to searching the title for a number if 'article' is missing
+    const numA = getNum(a.article || a.title);
+    const numB = getNum(b.article || b.title);
+    
+    if (numA !== numB) return numA - numB;
+    return (a.title || '').localeCompare(b.title || ''); 
+  });
+
   return (
     <div className="space-y-6" data-testid="knowledge-page">
       <div className="flex items-center justify-between">
@@ -226,8 +256,38 @@ export const Knowledge = ({ user }) => {
         )}
       </div>
 
+      {/* 🚨 ADMIN PANEL SECTION */}
       {user?.role === 'admin' && (
-        <AdminSettingsControl />
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <AdminSettingsControl />
+          
+          <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20 mb-6">
+            <CardContent className="pt-6">
+              <h3 className="font-serif font-semibold text-primary mb-4">Create New Admin Account</h3>
+              <form onSubmit={handleCreateAdmin} className="flex flex-col sm:flex-row gap-3">
+                <Input 
+                  placeholder="Username" 
+                  value={newAdmin.username}
+                  onChange={(e) => setNewAdmin({...newAdmin, username: e.target.value})}
+                  required
+                />
+                <Input 
+                  type="password"
+                  placeholder="Password" 
+                  value={newAdmin.password}
+                  onChange={(e) => setNewAdmin({...newAdmin, password: e.target.value})}
+                  required
+                />
+                <button 
+                  type="submit" 
+                  className="px-4 py-2 bg-primary text-primary-foreground rounded-sm text-sm hover:bg-primary/90 whitespace-nowrap"
+                >
+                  Create Admin
+                </button>
+              </form>
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {showAddForm && user?.role === 'admin' && (
@@ -344,7 +404,8 @@ export const Knowledge = ({ user }) => {
                 <SelectValue placeholder="Select a law to delete..." />
               </SelectTrigger>
               <SelectContent>
-                {laws.map((law) => (
+                {/* 🚨 ADDED: The dropdown is now sorted too! */}
+                {sortedLaws.map((law) => (
                   <SelectItem key={law.id} value={law.id}>
                     {law.title}
                   </SelectItem>
@@ -379,10 +440,7 @@ export const Knowledge = ({ user }) => {
                 type="text"
                 placeholder="Search legal knowledge..."
                 value={searchQuery}
-                onChange={(e) => {
-                  console.log("⌨️ KEY PRESSED:", e.target.value);
-                  setSearchQuery(e.target.value);
-                }}
+                onChange={(e) => setSearchQuery(e.target.value)}
                 className="flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm"
               />
             </div>
@@ -411,9 +469,10 @@ export const Knowledge = ({ user }) => {
           </div>
         </CardHeader>
         <CardContent>
-          {laws.length > 0 ? (
+          {/* 🚨 ADDED: Now mapping over the sorted array! */}
+          {sortedLaws.length > 0 ? (
             <div className="space-y-3">
-              {laws.map((law) => (
+              {sortedLaws.map((law) => (
                 <div
                   key={law.id}
                   className="rounded-sm border hover:bg-muted/30 transition-colors"
@@ -426,6 +485,7 @@ export const Knowledge = ({ user }) => {
                     <div className="flex items-center gap-3">
                       <BookOpen className="h-4 w-4 text-primary flex-shrink-0" />
                       <div>
+                        {/* Optionally you could display the article number here if you want it visible! */}
                         <h3 className="font-serif font-semibold text-base">{law.title}</h3>
                         <span className="text-xs text-muted-foreground">{law.category}</span>
                       </div>
