@@ -492,7 +492,20 @@ async def get_chat_history(session_id: str):
     return {"messages": messages}
 
 app.include_router(api_router)
-app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://your-vercel-app-name.vercel.app" 
+]
+
+app.add_middleware(
+    CORSMiddleware, 
+    allow_origins=origins, # Use the specific list
+    allow_credentials=True, 
+    allow_methods=["*"], 
+    allow_headers=["*"]
+)
 
 @app.on_event("startup")
 async def startup_event():
