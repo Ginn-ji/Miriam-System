@@ -8,13 +8,31 @@ import apiClient from '../api/apiClient';
 import { toast } from 'sonner';
 
 export const LawResultCard = ({ lawData }) => {
+  // Helper to dynamically style the badge based on accuracy percentage
+  const getBadgeStyle = (accuracyString) => {
+    const score = parseInt(accuracyString?.replace('%', '') || '0', 10);
+    if (score >= 75) {
+      return "bg-emerald-100 text-emerald-800 border-emerald-200"; // High match (Green)
+    }
+    return "bg-amber-100 text-amber-800 border-amber-200"; // Moderate match (Amber/Yellow)
+  };
+
   return (
     <Card className="mt-4 mb-2 shadow-sm border border-gray-200 overflow-hidden w-full text-left bg-white">
-      <div className="p-4 border-b bg-gray-50 flex items-center gap-2">
-        <BookOpen className="h-5 w-5 text-primary" />
-        <h3 className="font-serif font-bold text-lg text-gray-900">
-          {lawData.article ? `${lawData.article}: ${lawData.title}` : lawData.title}
-        </h3>
+      <div className="p-4 border-b bg-gray-50 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <BookOpen className="h-5 w-5 text-primary shrink-0" />
+          <h3 className="font-serif font-bold text-lg text-gray-900">
+            {lawData.article ? `${lawData.article}: ${lawData.title}` : lawData.title}
+          </h3>
+        </div>
+
+        {/* ACCURACY BADGE */}
+        {lawData.accuracy && (
+          <span className={`px-2.5 py-1 rounded-full text-xs font-bold border shrink-0 ${getBadgeStyle(lawData.accuracy)}`}>
+            {lawData.accuracy} Match
+          </span>
+        )}
       </div>
 
       <div className="p-0">
@@ -33,7 +51,7 @@ export const LawResultCard = ({ lawData }) => {
             <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
           </summary>
           <div className="p-4 pt-2 text-sm text-gray-600 whitespace-pre-wrap bg-gray-50/50 leading-relaxed border-t border-gray-100">
-            {lawData.chunks ? lawData.chunks.join('\n\n') : 'Full text not available.'}
+            {lawData.chunks ? (Array.isArray(lawData.chunks) ? lawData.chunks.join('\n\n') : lawData.chunks) : 'Full text not available.'}
           </div>
         </details>
       </div>

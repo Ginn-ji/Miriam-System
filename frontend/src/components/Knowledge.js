@@ -82,10 +82,12 @@ export const Knowledge = ({ user }) => {
   const [expandedId, setExpandedId] = useState(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showDeleteForm, setShowDeleteForm] = useState(false);
-  const [selectedLawToDelete, setSelectedLawToDelete] = useState('');
+  const [showEditForm, setShowEditForm] = useState(false);
   const [uploadFile, setUploadFile] = useState(null);
   
-  // 🚨 ADDED: State to hold the new admin info
+  // Bulk selection state variables
+  const [selectedIds, setSelectedIds] = useState([]);
+  
   const [newAdmin, setNewAdmin] = useState({ username: '', password: '' });
   
   const [newLaw, setNewLaw] = useState({
@@ -96,6 +98,9 @@ export const Knowledge = ({ user }) => {
     tags: '',
     language: 'en'
   });
+  
+  const [editingLaw, setEditingLaw] = useState(null);
+
   const lawFileInputRef = useRef(null);
 
   useEffect(() => {
@@ -133,13 +138,10 @@ export const Knowledge = ({ user }) => {
     }
   };
 
-  const handleSearch = () => fetchLaws();
-
   const toggleExpand = (id) => {
     setExpandedId(expandedId === id ? null : id);
   };
 
-  // 🚨 ADDED: Function to create the new Admin
   const handleCreateAdmin = async (e) => {
     e.preventDefault();
     try {
@@ -195,33 +197,72 @@ export const Knowledge = ({ user }) => {
     }
   };
 
-  const handleDelete = async () => {
-    if (!selectedLawToDelete) return;
-    if (!window.confirm('Are you sure you want to delete this law?')) return;
+  const handleUpdateLaw = async () => {
+    if (!editingLaw.title) {
+      toast.error('Please enter a title');
+      return;
+    }
     try {
-      await apiClient.delete(`/legal-knowledge/${selectedLawToDelete}`);
-      toast.success('Law deleted successfully!');
+      await apiClient.put(`/legal-knowledge/${editingLaw.id}`, {
+        ...editingLaw,
+        tags: typeof editingLaw.tags === 'string' 
+          ? editingLaw.tags.split(',').map(t => t.trim()).filter(t => t) 
+          : editingLaw.tags
+      });
+      setShowEditForm(false);
+      setEditingLaw(null);
+      fetchLaws();
+      toast.success('Legal article updated successfully!');
+    } catch (error) {
+      console.error('Error updating law:', error);
+      toast.error('Failed to update legal article');
+    }
+  };
+
+  // Bulk check handler
+  const handleSelectCheckbox = (id) => {
+    setSelectedIds(prev => 
+      prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
+    );
+  };
+
+  // Bulk delete execution
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    if (!window.confirm(`Are you sure you want to delete these ${selectedIds.length} laws?`)) return;
+    try {
+      await apiClient.post('/legal-knowledge/bulk-delete', { ids: selectedIds });
+      toast.success('Selected laws deleted successfully!');
+      setSelectedIds([]);
       setShowDeleteForm(false);
-      setSelectedLawToDelete('');
-      setExpandedId(null);
       fetchLaws();
     } catch (error) {
-      console.error('Error deleting law:', error);
-      toast.error('Failed to delete law');
+      toast.error('Failed to delete selected laws');
+    }
+  };
+
+  // Delete all execution
+  const handleDeleteAll = async () => {
+    if (!window.confirm('⚠️ WARNING: This will delete ALL legal articles in the system. Are you completely sure?')) return;
+    try {
+      await apiClient.delete('/legal-knowledge/delete-all');
+      toast.success('All laws deleted successfully!');
+      setSelectedIds([]);
+      setShowDeleteForm(false);
+      fetchLaws();
+    } catch (error) {
+      toast.error('Failed to clear database');
     }
   };
 
   const categories = ['all', 'Civil Law', 'Labor Law', 'Criminal Law', 'Family Law', 'Privacy Law'];
 
-  // 🚨 ADDED: The Smart Numerical Sort
   const sortedLaws = [...laws].sort((a, b) => {
     const getNum = (str) => {
       if (!str) return 999999;
       const match = str.match(/\d+/);
       return match ? parseInt(match[0], 10) : 999999;
     };
-    
-    // Fallback to searching the title for a number if 'article' is missing
     const numA = getNum(a.article || a.title);
     const numB = getNum(b.article || b.title);
     
@@ -241,13 +282,13 @@ export const Knowledge = ({ user }) => {
         {user?.role === 'admin' && (
           <div className="flex items-center gap-2">
             <button
-              onClick={() => { setShowAddForm(!showAddForm); setShowDeleteForm(false); }}
+              onClick={() => { setShowAddForm(!showAddForm); setShowDeleteForm(false); setShowEditForm(false); }}
               className="flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-sm text-sm font-medium hover:bg-primary/90 transition-colors"
             >
               {showAddForm ? 'Cancel' : '+ Add Law'}
             </button>
             <button
-              onClick={() => { setShowDeleteForm(!showDeleteForm); setShowAddForm(false); }}
+              onClick={() => { setShowDeleteForm(!showDeleteForm); setShowAddForm(false); setShowEditForm(false); }}
               className="flex items-center gap-2 px-4 py-2 bg-destructive text-destructive-foreground rounded-sm text-sm font-medium hover:bg-destructive/90 transition-colors"
             >
               {showDeleteForm ? 'Cancel' : '🗑 Delete Law'}
@@ -256,7 +297,6 @@ export const Knowledge = ({ user }) => {
         )}
       </div>
 
-      {/* 🚨 ADMIN PANEL SECTION */}
       {user?.role === 'admin' && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <AdminSettingsControl />
@@ -290,9 +330,79 @@ export const Knowledge = ({ user }) => {
         </div>
       )}
 
+      {showEditForm && user?.role === 'admin' && editingLaw && (
+        <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-amber-500/30">
+          <CardContent className="pt-6 space-y-3">
+            <h3 className="font-serif font-semibold text-amber-600">Edit Legal Article</h3>
+            
+            <Input
+              placeholder="Article Number (e.g., Art. 1)"
+              value={editingLaw.article}
+              onChange={(e) => setEditingLaw({...editingLaw, article: e.target.value})}
+            />
+            <Input
+              placeholder="Title (e.g. Declaration of Policy)"
+              value={editingLaw.title}
+              onChange={(e) => setEditingLaw({...editingLaw, title: e.target.value})}
+            />
+            
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <Select value={editingLaw.category} onValueChange={(val) => setEditingLaw({...editingLaw, category: val})}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Category" />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories.filter(c => c !== 'all').map((cat) => (
+                    <SelectItem key={cat} value={cat}>{cat}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={editingLaw.language} onValueChange={(val) => setEditingLaw({...editingLaw, language: val})}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Language" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="en">English</SelectItem>
+                  <SelectItem value="tl">Tagalog</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Input
+              placeholder="Tags (comma separated)"
+              value={editingLaw.tags}
+              onChange={(e) => setEditingLaw({...editingLaw, tags: e.target.value})}
+            />
+            <textarea
+              placeholder="Content"
+              value={editingLaw.content}
+              onChange={(e) => setEditingLaw({...editingLaw, content: e.target.value})}
+              className="w-full min-h-[150px] p-2 text-sm border rounded-sm bg-background resize-none"
+            />
+            
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={handleUpdateLaw}
+                className="px-4 py-2 bg-amber-600 text-white rounded-sm text-sm hover:bg-amber-700"
+              >
+                Save Changes
+              </button>
+              <button
+                onClick={() => {
+                  setShowEditForm(false);
+                  setEditingLaw(null);
+                }}
+                className="px-4 py-2 bg-muted text-muted-foreground rounded-sm text-sm hover:bg-muted/80"
+              >
+                Cancel
+              </button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
       {showAddForm && user?.role === 'admin' && (
         <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)]">
-          <CardContent className="pt-6 space-y-3">
+           <CardContent className="pt-6 space-y-3">
             <h3 className="font-serif font-semibold">Add New Legal Article</h3>
             
             <Input
@@ -395,36 +505,27 @@ export const Knowledge = ({ user }) => {
         </Card>
       )}
 
+      {/* NEW BULK & MASS DELETE ACTION BAR */}
       {showDeleteForm && user?.role === 'admin' && (
-        <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-destructive/20">
-          <CardContent className="pt-6 space-y-3">
-            <h3 className="font-serif font-semibold text-destructive">Delete Legal Article</h3>
-            <Select value={selectedLawToDelete} onValueChange={setSelectedLawToDelete}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select a law to delete..." />
-              </SelectTrigger>
-              <SelectContent>
-                {/* 🚨 ADDED: The dropdown is now sorted too! */}
-                {sortedLaws.map((law) => (
-                  <SelectItem key={law.id} value={law.id}>
-                    {law.title}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <div className="flex gap-2 pt-1">
+        <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-destructive/20 bg-destructive/5">
+          <CardContent className="pt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div>
+              <h3 className="font-serif font-semibold text-destructive">Bulk Management & Deletion</h3>
+              <p className="text-xs text-muted-foreground">Select individual checkboxes from the list below or clear everything.</p>
+            </div>
+            <div className="flex gap-2">
               <button
-                onClick={handleDelete}
-                disabled={!selectedLawToDelete}
-                className="px-4 py-2 bg-destructive text-destructive-foreground rounded-sm text-sm hover:bg-destructive/90 disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={handleBulkDelete}
+                disabled={selectedIds.length === 0}
+                className="px-4 py-2 bg-destructive text-destructive-foreground rounded-sm text-sm hover:bg-destructive/90 disabled:opacity-50"
               >
-                Confirm Delete
+                Delete Selected ({selectedIds.length})
               </button>
               <button
-                onClick={() => { setShowDeleteForm(false); setSelectedLawToDelete(''); }}
-                className="px-4 py-2 bg-muted text-muted-foreground rounded-sm text-sm hover:bg-muted/80"
+                onClick={handleDeleteAll}
+                className="px-4 py-2 bg-black text-white rounded-sm text-sm hover:bg-gray-800"
               >
-                Cancel
+                Delete All Laws
               </button>
             </div>
           </CardContent>
@@ -469,69 +570,100 @@ export const Knowledge = ({ user }) => {
           </div>
         </CardHeader>
         <CardContent>
-          {/* 🚨 ADDED: Now mapping over the sorted array! */}
           {sortedLaws.length > 0 ? (
             <div className="space-y-3">
               {sortedLaws.map((law) => (
                 <div
                   key={law.id}
-                  className="rounded-sm border hover:bg-muted/30 transition-colors"
+                  className="rounded-sm border hover:bg-muted/30 transition-colors flex items-center px-4"
                   data-testid="law-item"
                 >
-                  <div
-                    className="flex items-center justify-between p-4 cursor-pointer"
-                    onClick={() => toggleExpand(law.id)}
-                  >
-                    <div className="flex items-center gap-3">
-                      <BookOpen className="h-4 w-4 text-primary flex-shrink-0" />
-                      <div>
-                        {/* Optionally you could display the article number here if you want it visible! */}
-                        <h3 className="font-serif font-semibold text-base">{law.title}</h3>
-                        <span className="text-xs text-muted-foreground">{law.category}</span>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="legal-badge text-xs">{law.language}</span>
-                      {expandedId === law.id
-                        ? <ChevronUp className="h-4 w-4 text-muted-foreground" />
-                        : <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                      }
-                    </div>
-                  </div>
-
-                  {expandedId === law.id && (
-                    <div className="px-4 pb-4 border-t pt-3 space-y-3">
-                      <div>
-                        <p className="text-xs font-medium text-muted-foreground mb-1">Content</p>
-                        <p className="text-sm leading-relaxed">{law.content}</p>
-                      </div>
-                      <div>
-                        <div className="flex items-center gap-1 mb-1">
-                          <Tag className="h-3 w-3 text-muted-foreground" />
-                          <p className="text-xs font-medium text-muted-foreground">Tags</p>
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {law.tags.map((tag, idx) => (
-                            <span
-                              key={idx}
-                              className="px-2 py-1 rounded-sm bg-muted text-muted-foreground text-xs"
-                            >
-                              {tag}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                      <div className="flex items-center justify-between pt-1">
-                        <span className="px-2 py-1 rounded-sm bg-primary/10 text-primary text-xs font-medium">
-                          {law.category}
-                        </span>
-                        <div className="flex items-center gap-1 text-xs text-muted-foreground">
-                          <Calendar className="h-3 w-3" />
-                          <span>Added: {new Date(law.created_at).toLocaleDateString()}</span>
-                        </div>
-                      </div>
-                    </div>
+                  {/* Checkbox enabled dynamically when Delete mode is active */}
+                  {user?.role === 'admin' && showDeleteForm && (
+                    <input 
+                      type="checkbox" 
+                      checked={selectedIds.includes(law.id)}
+                      onChange={() => handleSelectCheckbox(law.id)}
+                      className="mr-3 h-4 w-4 accent-primary cursor-pointer"
+                    />
                   )}
+
+                  <div className="flex-1">
+                    <div
+                      className="flex items-center justify-between py-4 cursor-pointer"
+                      onClick={() => toggleExpand(law.id)}
+                    >
+                      <div className="flex items-center gap-3">
+                        <BookOpen className="h-4 w-4 text-primary flex-shrink-0" />
+                        <div>
+                          <h3 className="font-serif font-semibold text-base">{law.title}</h3>
+                          <span className="text-xs text-muted-foreground">{law.category}</span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="legal-badge text-xs">{law.language}</span>
+                        {expandedId === law.id
+                          ? <ChevronUp className="h-4 w-4 text-muted-foreground" />
+                          : <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                        }
+                      </div>
+                    </div>
+
+                    {expandedId === law.id && (
+                      <div className="pb-4 border-t pt-3 space-y-3">
+                        <div>
+                          <p className="text-xs font-medium text-muted-foreground mb-1">Content</p>
+                          <p className="text-sm leading-relaxed">{law.content}</p>
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-1 mb-1">
+                            <Tag className="h-3 w-3 text-muted-foreground" />
+                            <p className="text-xs font-medium text-muted-foreground">Tags</p>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {law.tags.map((tag, idx) => (
+                              <span
+                                key={idx}
+                                className="px-2 py-1 rounded-sm bg-muted text-muted-foreground text-xs"
+                              >
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between pt-1">
+                          <span className="px-2 py-1 rounded-sm bg-primary/10 text-primary text-xs font-medium">
+                            {law.category}
+                          </span>
+                          
+                          <div className="flex items-center gap-3">
+                            {user?.role === 'admin' && (
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  setEditingLaw({
+                                    ...law,
+                                    tags: Array.isArray(law.tags) ? law.tags.join(', ') : law.tags
+                                  });
+                                  setShowEditForm(true);
+                                  setShowAddForm(false);
+                                  setShowDeleteForm(false);
+                                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                                }}
+                                className="px-3 py-1 bg-amber-100 text-amber-800 rounded-sm text-xs hover:bg-amber-200 transition-colors font-medium"
+                              >
+                                Edit Law
+                              </button>
+                            )}
+                            <div className="flex items-center gap-1 text-xs text-muted-foreground">
+                              <Calendar className="h-3 w-3" />
+                              <span>Added: {new Date(law.created_at).toLocaleDateString()}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>

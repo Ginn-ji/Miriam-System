@@ -72,15 +72,6 @@ export const Sidebar = ({ user, onLogout }) => {
 
       <div className="p-4 border-t space-y-2">
         <Button
-          variant="outline"
-          size="sm"
-          onClick={toggleLanguage}
-          className="w-full flex items-center justify-center gap-2"
-        >
-          <Globe className="h-4 w-4" />
-          {language === 'en' ? 'Tagalog' : 'English'}
-        </Button>
-        <Button
           variant="ghost"
           size="sm"
           onClick={onLogout}
