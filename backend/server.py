@@ -310,31 +310,35 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         vocabulary = set([word for doc in tokenized_corpus for word in doc if word not in stopwords and len(word) > 2])
         
         # ==========================================
-        # 1. PRE-RETRIEVAL TRANSLATION (The Missing Key)
+        # 1. PRE-RETRIEVAL TRANSLATION
         # ==========================================
         search_text = message_text
         try:
             detected_lang = detect_language_simple(message_text)
             if detected_lang in ['tl', 'unknown']:
                 english_translation = GoogleTranslator(source='tl', target='en').translate(message_text)
-                # Combine Tagalog and English so the math engine searches BOTH
                 search_text = f"{message_text} {english_translation}"
                 logger.info(f"Expanded Search: {search_text}")
         except Exception as e:
             logger.warning(f"Pre-translation failed: {e}")
 
-        # Now we tokenize the COMBINED Taglish + English text
         raw_tokens = [w.lower() for w in search_text.split() if len(w) > 2 and w.lower() not in stopwords]
         
+        # ==========================================
+        # FIX: STRICT SINGLE/SHORT-WORD GUARDRAIL
+        # ==========================================
         corrected_tokens = []
         for t in raw_tokens:
             if t in vocabulary:
                 corrected_tokens.append(t)
             elif vocabulary:
-                closest = min(vocabulary, key=lambda v: Levenshtein.distance(t, v))
-                dist = Levenshtein.distance(t, closest)
-                if dist == 1 or (dist == 2 and len(t) >= 8):
-                    corrected_tokens.append(closest)
+                # If a word is very short (less than 5 letters), do NOT allow fuzzy spell-checking.
+                # This explicitly stops "tite" from mapping to "title".
+                if len(t) >= 5:
+                    closest = min(vocabulary, key=lambda v: Levenshtein.distance(t, v))
+                    dist = Levenshtein.distance(t, closest)
+                    if dist == 1 or (dist == 2 and len(t) >= 8):
+                        corrected_tokens.append(closest)
                     
         if not corrected_tokens:
              return ChatResponse(
@@ -364,7 +368,10 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                 
         query_text_for_math = " ".join(expanded_tokens)
         
-        vectorizer = TfidfVectorizer()
+        # ==========================================
+        # FIX: UPGRADE TO PHRASE N-GRAMS (1 to 2 word combos)
+        # ==========================================
+        vectorizer = TfidfVectorizer(ngram_range=(1, 2))
         tfidf_matrix = vectorizer.fit_transform(corpus)
         query_vec = vectorizer.transform([query_text_for_math]) 
         cosine_scores = cosine_similarity(query_vec, tfidf_matrix).flatten()
@@ -384,7 +391,9 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             logger.warning(f"Could not fetch limit setting, using default 5. Error: {e}")
             chat_limit = 5
         
- # 6. STRICTER THRESHOLD (Raised to 0.30)
+        # ==========================================
+        # FIX: STRICT CONFIDENCE THRESHOLD CHECK (Floor set to 0.45)
+        # ==========================================
         top_indices = np.argsort(final_scores)[::-1][:chat_limit]
         matched_laws = [all_laws[i] for i in top_indices if final_scores[i] > 0.45]
         
@@ -393,34 +402,27 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             law['best_match_chunk'] = max(law.get('chunks', []), key=lambda c: len(qs.intersection(set(c.lower().split()))), default="")
             
         if not matched_laws:
-            base_response = "I could not find a specific Philippine Labor Law matching your query. Ensure your question is related to employment, wages, or workplace policies."
+            final_response = "I could not find any specific Philippine Labor Law matching your query. Please ensure your question is related to employment, wages, or workplace policies."
+            matched_laws = []
         else:
             base_response = f"I found {len(matched_laws)} relevant articles regarding your query:"
-
-        # ==========================================
-        # 7. POST-RETRIEVAL TRANSLATION (Output Localization)
-        # ==========================================
-        final_response = base_response
-        
-        try:
-            # Check if the user's original raw message was in Tagalog
-            detected_lang = detect_language_simple(message)
-            if detected_lang in ['tl', 'unknown']:
-                
-                # 1. Translate the bot's greeting back to Tagalog
-                final_response = GoogleTranslator(source='en', target='tl').translate(base_response)
-                
-                # 2. Translate the "Relevant Section" chunk so the user understands the law!
-                for law in matched_laws:
-                    if law['best_match_chunk']:
-                        translated_chunk = GoogleTranslator(source='en', target='tl').translate(law['best_match_chunk'])
-                        # Overwrite it so the React frontend displays the Tagalog version automatically
-                        law['best_match_chunk'] = translated_chunk
-                        
-        except Exception as e:
-            logger.warning(f"Output translation failed: {e}")
+            final_response = base_response
             
-        # Save to database and return to frontend using the final_response
+            # ==========================================
+            # 7. POST-RETRIEVAL TRANSLATION
+            # ==========================================
+            try:
+                detected_lang = detect_language_simple(message)
+                if detected_lang in ['tl', 'unknown']:
+                    final_response = GoogleTranslator(source='en', target='tl').translate(base_response)
+                    for law in matched_laws:
+                        if law['best_match_chunk']:
+                            translated_chunk = GoogleTranslator(source='en', target='tl').translate(law['best_match_chunk'])
+                            law['best_match_chunk'] = translated_chunk
+            except Exception as e:
+                logger.warning(f"Output translation failed: {e}")
+            
+        # Save validation results cleanly into database
         await db.chat_history.insert_one({
             "id": str(uuid.uuid4()), 
             "session_id": session_id, 
