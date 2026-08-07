@@ -138,7 +138,7 @@ if (isRegistering) {
           </div>
           
           <p className="text-[10px] text-center text-muted-foreground mt-6 italic">
-            By continuing, you acknowledge that this AI system provides legal awareness and is not a substitute for professional legal advice.
+            By continuing, you acknowledge that this AI system provides legal awareness and is not a substitute for professional legal advice. There is strictly no attorney to client relationship, this is only an advanced search engine about Philippine Labor Code.
           </p>
         </CardContent>
       </Card>

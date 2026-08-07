@@ -87,7 +87,10 @@ async def train_search_models():
     search_engine.tokenized_corpus = tokenized_corpus
     
     # Train TF-IDF
-    search_engine.vectorizer = TfidfVectorizer(ngram_range=(1, 2))
+    # stop_words='english' strips filler words from the vocabulary itself (not just the query),
+    # so common words shared by every document stop inflating cosine similarity for irrelevant queries.
+    # min_df=2 drops one-off tokens/typos that would otherwise create accidental exact-match spikes.
+    search_engine.vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words='english', min_df=2)
     search_engine.tfidf_matrix = search_engine.vectorizer.fit_transform(corpus)
     
     # Train BM25
@@ -317,66 +320,34 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             logger.warning(f"Pre-translation failed: {e}")
 
         stopwords = {
-            "ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "naman", "lang", "daw", "din", "rin",
-            "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "to", "for", "with", "law", "article", "code",
-            "he", "she", "him", "his", "her", "they", "them", "their", "this", "that", "these", "those", "be", "been", "being", "has", "have", "had", "by", "from", "as", "not", "no", "any", "all", "such", "shall", "may", "will", "upon", "under", "which", "whom", "other", "out", "into", "same", "some",
-            "give", "given", "gave", "take", "took", "get", "got", "make", "made", "know", "knew", "ask", "asked", "tell", "told", "say", "said", "just", "like", "want", "went", "go", "off", "up", "down"
+            "ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", 
+            "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "to", "for", "with", "law", "article", "code"
         }
         
         raw_tokens = [w.lower() for w in search_text.split() if len(w) > 2 and w.lower() not in stopwords]
-        
-        recognized_count = 0
-        unrecognized_count = 0
-        corrected_tokens = []
-        
-        for t in raw_tokens:
-            if t in search_engine.vocabulary:
-                corrected_tokens.append(t)
-                recognized_count += 1
-            else:
-                closest = None
-                if search_engine.vocabulary and len(t) >= 5:
-                    closest_candidate = min(search_engine.vocabulary, key=lambda v: Levenshtein.distance(t, v))
-                    dist = Levenshtein.distance(t, closest_candidate)
-                    if dist == 1 or (dist == 2 and len(t) >= 8):
-                        closest = closest_candidate
-                
-                if closest:
+
+        # Pass 1: exact vocabulary hits only. This is the real relevance signal.
+        exact_tokens = [t for t in raw_tokens if t in search_engine.vocabulary]
+
+        # Gate on EXACT hits, before any fuzzy correction is allowed to run.
+        # Fuzzy correction should only ever fix a typo *within* an already-relevant
+        # query, never manufacture relevance for a query with zero real signal.
+        if not exact_tokens:
+            return ChatResponse(
+                response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.",
+                session_id=session_id, laws=[]
+            )
+
+        corrected_tokens = list(exact_tokens)
+        unmatched = [t for t in raw_tokens if t not in search_engine.vocabulary]
+        for t in unmatched:
+            if len(t) >= 6 and search_engine.vocabulary:
+                closest = min(search_engine.vocabulary, key=lambda v: Levenshtein.distance(t, v))
+                dist = Levenshtein.distance(t, closest)
+                # distance relative to word length, not a fixed constant, so short
+                # words need a near-exact match and only long words tolerate 2 edits
+                if dist == 1 or (dist == 2 and len(t) >= 9):
                     corrected_tokens.append(closest)
-                    recognized_count += 1
-                else:
-                    unrecognized_count += 1
-
-        # 🚨 TERMINAL DEBUGGER: This will print the math to your uvicorn terminal so you can see it working!
-        logger.info(f"QUERY ANALYSIS -> Recognized: {recognized_count} | Unrecognized: {unrecognized_count} | Tokens: {corrected_tokens}")
-                    
-        # 🚨 STRICTER RATIO TRAP (Changed > to >=)
-        # If the query is 50% or more garbage, it gets rejected immediately.
-        if unrecognized_count >= recognized_count and unrecognized_count > 0:
-            ratio_rejection_msg = "Your query contains terms that are unrelated to Philippine Labor Law. Please rephrase your question to focus strictly on employment, wages, or workplace rules."
-            
-            await db.chat_history.insert_one({
-                "id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, 
-                "user_message": message, "assistant_response": ratio_rejection_msg, 
-                "laws": [], "created_at": datetime.now(timezone.utc).isoformat()
-            })
-            return ChatResponse(response=ratio_rejection_msg, session_id=session_id, laws=[])
-
-        if not corrected_tokens:
-             return ChatResponse(
-                 response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.", 
-                 session_id=session_id, laws=[]
-             )
-             
-        generic_keywords = {"work", "job", "company", "time", "day", "year", "month", "employee", "employer", "worker", "business", "office", "person", "boss", "staff"}
-        if all(token in generic_keywords for token in corrected_tokens):
-            vague_response = "Your query is too vague or lacks legal context. Please be more specific (e.g., ask about 'separation pay', 'overtime rules', 'illegal dismissal', or 'maternity leave')."
-            await db.chat_history.insert_one({
-                "id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, 
-                "user_message": message, "assistant_response": vague_response, 
-                "laws": [], "created_at": datetime.now(timezone.utc).isoformat()
-            })
-            return ChatResponse(response=vague_response, session_id=session_id, laws=[])
         
         legal_synonyms = {
             "sweldo": ["wage", "salary", "pay", "compensation"], "sahod": ["wage", "salary", "pay", "compensation"],
@@ -394,6 +365,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                 
         query_text_for_math = " ".join(expanded_tokens)
         
+        # EXPLOIT CACHED MODELS (Instant Speed)
         query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
         cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
         bm25_scores = search_engine.bm25.get_scores(expanded_tokens) 
@@ -402,21 +374,6 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         baseline_denominator = highest_bm25 if highest_bm25 > 3.0 else 3.0
         
         final_scores = (cosine_scores * 0.5) + ((np.array(bm25_scores) / baseline_denominator) * 0.5)
-
-        # 🚨 UPDATED: STRICTER THRESHOLD FLOOR (Bumped from 0.10 to 0.20)
-        best_raw_score = float(max(final_scores)) if len(final_scores) > 0 else 0.0
-        
-        if best_raw_score < 0.20: 
-            nonsense_response = "I'm sorry, but your query does not seem to relate to any specific Philippine Labor Law in my system. Could you please rephrase or ask something specifically about employment, wages, or workplace rules?"
-            
-            await db.chat_history.insert_one({
-                "id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, 
-                "user_message": message, "assistant_response": nonsense_response, 
-                "laws": [], "created_at": datetime.now(timezone.utc).isoformat()
-            })
-            
-            return ChatResponse(response=nonsense_response, session_id=session_id, laws=[])
-        # =========================================================
         
         try:
             limit_setting = await db.settings.find_one({"key": "chat_limit"})
@@ -428,16 +385,18 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         matched_laws = []
         
         # INJECTING THE SCALED ACCURACY SCORE
+        exact_token_set = set(exact_tokens)
         for i in top_indices:
-            # Only process if the individual law also passes a minimum relevance check
-            if final_scores[i] > 0.10:
+            if final_scores[i] > 0.45:
                 law_data = search_engine.laws[i].copy()
-                
-                # --- NEW SCALING LOGIC ---
+                doc_words = set(search_engine.corpus[i].split())
+                if not (exact_token_set & doc_words):
+                    continue
+                    
                 scaled_score = final_scores[i] * 1.5 
                 raw_percentage = int(scaled_score * 100)
                 
-                # Cap the maximum visual score at 98%
+                # Cap the maximum visual score at 98% (never claim 100% perfection)
                 law_data['accuracy'] = f"{min(raw_percentage, 98)}%"
                 # -------------------------
                 
