@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from './ui/card';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
@@ -12,15 +12,30 @@ const Login = ({ onLogin }) => {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  
+ // Disclaimer state
+  const [showDisclaimer, setShowDisclaimer] = useState(false);
 
+  // Trigger disclaimer only if they haven't agreed before
+  useEffect(() => {
+    const hasAgreed = localStorage.getItem('shield_disclaimer_agreed');
+    if (!hasAgreed) {
+      setShowDisclaimer(true);
+    }
+  }, []);
+
+  const handleAcceptDisclaimer = () => {
+    localStorage.setItem('shield_disclaimer_agreed', 'true');
+    setShowDisclaimer(false);
+  };
+  
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
     setLoading(true);
 
-if (isRegistering) {
+    if (isRegistering) {
       try {
-        // Send a clean JSON object instead of FormData
         const payload = {
           username: username,
           password: password,
@@ -31,7 +46,6 @@ if (isRegistering) {
         const response = await apiClient.post('/users/register', payload);
         toast.success('Registration successful! Logging you in...');
         
-        // Auto-login after registration
         onLogin({ 
           id: response.data.id, 
           role: response.data.role, 
@@ -59,7 +73,36 @@ if (isRegistering) {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-secondary p-4 font-manrope">
+    <div className="relative min-h-screen flex items-center justify-center bg-secondary p-4 font-manrope">
+      
+      {showDisclaimer && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-white p-6 rounded-md shadow-lg max-w-md w-full animate-in fade-in zoom-in duration-300">
+            <h2 className="text-xl font-serif font-bold text-destructive mb-3">
+              ⚖️ Legal Disclaimer
+            </h2>
+            <div className="text-sm text-gray-600 space-y-3 mb-6">
+              <p>
+                Welcome to LACBot. This system is an AI-assisted legal awareness tool designed strictly for academic purposes.
+              </p>
+              <p>
+                The information retrieved by this chatbot does <strong>not</strong> constitute official legal advice, nor does it establish an attorney-client relationship. While we strive for accuracy, AI models may misinterpret complex legal nuances.
+              </p>
+              <p>
+                Always consult with a qualified legal professional or the Department of Labor and Employment (DOLE) for binding, official guidance.
+              </p>
+            </div>
+            <button
+              onClick={handleAcceptDisclaimer}
+              className="w-full py-2 bg-primary text-white rounded-sm font-medium hover:bg-primary/90 transition-colors"
+            >
+              I Understand and Agree
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Main Login UI */}
       <Card className="w-full max-w-md shadow-lg border-t-4 border-t-primary">
         <CardHeader className="text-center space-y-1">
           <div className="flex justify-center mb-2">
@@ -101,7 +144,7 @@ if (isRegistering) {
                 <div className="absolute inset-0 flex items-center">
                   <span className="w-full border-t" />
                 </div>
-                <div className="relative flex justify-center text-xs uppercase">
+                <div className="relative flex justify-center text-xs  uppercase">
                   <span className="bg-card px-2 text-muted-foreground">Or access without account</span>
                 </div>
               </div>

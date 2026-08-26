@@ -3,7 +3,7 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { Card, CardContent, CardHeader } from './ui/card';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { BookOpen, Search, ChevronDown, ChevronUp, Calendar, Tag, Settings } from 'lucide-react';
+import { BookOpen, Search, ChevronDown, ChevronUp, Calendar, Tag, Settings, Users, ShieldAlert, ShieldCheck, ShieldPlus } from 'lucide-react';
 import apiClient from '../api/apiClient';
 import { toast } from 'sonner';
 
@@ -45,7 +45,7 @@ export const AdminSettingsControl = () => {
             <Settings className="h-5 w-5" />
           </div>
           <div>
-            <h3 className="font-semibold font-serif text-gray-900">System Configuration</h3>
+            <h3 className="font-semibold font-serif text-gray-900">Laws Retrieved</h3>
             <p className="text-xs text-muted-foreground">Manage how many laws the AI retrieves per chat.</p>
           </div>
         </div>
@@ -65,7 +65,7 @@ export const AdminSettingsControl = () => {
             disabled={isSaving}
             className="px-3 py-1.5 bg-primary text-primary-foreground text-xs rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50"
           >
-            {isSaving ? 'Saving...' : 'Save Rule'}
+            {isSaving ? 'Saving...' : 'Save'}
           </button>
         </div>
       </CardContent>
@@ -73,6 +73,172 @@ export const AdminSettingsControl = () => {
   );
 };
 
+// ==================== SUPER ADMIN USER MANAGEMENT PANEL ====================
+export const UserManagementControl = ({ currentUser }) => {
+  const [userList, setUserList] = useState([]);
+  const [newAccount, setNewAccount] = useState({ username: '', password: '', role: 'admin' });
+  const [loading, setLoading] = useState(false);
+
+  const fetchUsers = async () => {
+    try {
+      const response = await apiClient.get('/users', {
+        params: { requester_id: currentUser?.id }
+      });
+      setUserList(response.data.users || []);
+    } catch (err) {
+      console.error("Failed to fetch users:", err);
+    }
+  };
+
+  useEffect(() => {
+    if (currentUser?.role === 'super_admin') {
+      fetchUsers();
+    }
+  }, [currentUser]);
+
+  const handleCreateAccount = async (e) => {
+    e.preventDefault();
+    try {
+      const payload = {
+        username: newAccount.username,
+        password: newAccount.password,
+        role: newAccount.role,
+        current_user_role: currentUser?.role 
+      };
+
+      await apiClient.post('/users/register', payload);
+      toast.success(`New ${newAccount.role} account created!`);
+      setNewAccount({ username: '', password: '', role: 'admin' });
+      fetchUsers();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || 'Failed to create account');
+    }
+  };
+
+  const handleRoleChange = async (targetId, newRole) => {
+    try {
+      await apiClient.put(`/users/${targetId}/role`, {
+        requester_id: currentUser?.id,
+        new_role: newRole
+      });
+      toast.success("User role updated successfully");
+      fetchUsers();
+    } catch (err) {
+      toast.error(err.response?.data?.detail || "Failed to update role");
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+      {/* Create Account Form */}
+      <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20">
+        <CardContent className="pt-6">
+          <div className="flex items-center gap-2 mb-4">
+            <ShieldPlus className="h-5 w-5 text-primary" />
+            <h3 className="font-serif font-semibold text-primary">Create Admin Account</h3>
+          </div>
+          <form onSubmit={handleCreateAccount} className="space-y-3">
+            <Input 
+              placeholder="Username" 
+              value={newAccount.username}
+              onChange={(e) => setNewAccount({...newAccount, username: e.target.value})}
+              required
+            />
+            <Input 
+              type="password"
+              placeholder="Password" 
+              value={newAccount.password}
+              onChange={(e) => setNewAccount({...newAccount, password: e.target.value})}
+              required
+            />
+            <Select 
+              value={newAccount.role} 
+              onValueChange={(val) => setNewAccount({...newAccount, role: val})}
+            >
+              <SelectTrigger>
+                <SelectValue placeholder="Assign Role" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="admin">Admin</SelectItem>
+                <SelectItem value="super_admin">Super Admin</SelectItem>
+              </SelectContent>
+            </Select>
+            <button 
+              type="submit" 
+              className="w-full py-2 bg-primary text-primary-foreground rounded-sm text-sm hover:bg-primary/90 font-medium"
+            >
+              Create Account
+            </button>
+          </form>
+        </CardContent>
+      </Card>
+
+      {/* User Roster Table */}
+      <Card className="lg:col-span-2 shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20">
+        <CardContent className="pt-6">
+          <div className="flex items-center gap-2 mb-4">
+            <Users className="h-5 w-5 text-primary" />
+            <h3 className="font-serif font-semibold text-primary">User Management & Permissions</h3>
+          </div>
+          <div className="max-h-60 overflow-y-auto border rounded-sm">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-muted text-muted-foreground border-b text-xs uppercase">
+                <tr>
+                  <th className="p-2.5">Username</th>
+                  <th className="p-2.5">Current Role</th>
+                  <th className="p-2.5 text-right">Change Role</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {userList.map((u) => (
+                  <tr key={u.id} className="hover:bg-muted/40 transition-colors">
+                    <td className="p-2.5 font-medium flex items-center gap-2">
+                      {u.role === 'super_admin' ? (
+                        <ShieldAlert className="h-4 w-4 text-destructive" />
+                      ) : u.role === 'admin' ? (
+                        <ShieldCheck className="h-4 w-4 text-primary" />
+                      ) : (
+                        <div className="h-2 w-2 rounded-full bg-gray-400" />
+                      )}
+                      {u.username}
+                      {u.id === currentUser?.id && <span className="text-[10px] text-muted-foreground">(You)</span>}
+                    </td>
+                    <td className="p-2.5">
+                      <span className={`px-2 py-0.5 text-xs rounded-sm ${
+                        u.role === 'super_admin' ? 'bg-destructive/10 text-destructive font-semibold' :
+                        u.role === 'admin' ? 'bg-primary/10 text-primary font-semibold' :
+                        'bg-gray-100 text-gray-700'
+                      }`}>
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="p-2.5 text-right">
+                      {u.id !== currentUser?.id ? (
+                        <select
+                          value={u.role}
+                          onChange={(e) => handleRoleChange(u.id, e.target.value)}
+                          className="text-xs border rounded p-1 bg-background"
+                        >
+                          <option value="user">User</option>
+                          <option value="admin">Admin</option>
+                          <option value="super_admin">Super Admin</option>
+                        </select>
+                      ) : (
+                        <span className="text-xs text-muted-foreground italic">Owner</span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+};
+
+// ==================== MAIN KNOWLEDGE COMPONENT ====================
 export const Knowledge = ({ user }) => {
   const { t } = useLanguage();
   const [laws, setLaws] = useState([]);
@@ -88,8 +254,6 @@ export const Knowledge = ({ user }) => {
   // Bulk selection state variables
   const [selectedIds, setSelectedIds] = useState([]);
   
-  const [newAdmin, setNewAdmin] = useState({ username: '', password: '' });
-  
   const [newLaw, setNewLaw] = useState({
     article: '',
     title: '',
@@ -100,8 +264,10 @@ export const Knowledge = ({ user }) => {
   });
   
   const [editingLaw, setEditingLaw] = useState(null);
-
   const lawFileInputRef = useRef(null);
+
+  const isStaff = user?.role === 'admin' || user?.role === 'super_admin';
+  const isSuperAdmin = user?.role === 'super_admin';
 
   useEffect(() => {
     const triggerSearch = async () => {
@@ -140,24 +306,6 @@ export const Knowledge = ({ user }) => {
 
   const toggleExpand = (id) => {
     setExpandedId(expandedId === id ? null : id);
-  };
-
-  const handleCreateAdmin = async (e) => {
-    e.preventDefault();
-    try {
-      const payload = {
-        username: newAdmin.username,
-        password: newAdmin.password,
-        role: 'admin', 
-        current_user_role: user?.role 
-      };
-
-      await apiClient.post('/users/register', payload);
-      toast.success('New Admin account successfully created!');
-      setNewAdmin({ username: '', password: '' }); 
-    } catch (err) {
-      toast.error(err.response?.data?.detail || 'Failed to create admin');
-    }
   };
 
   const handleAddLaw = async () => {
@@ -219,14 +367,12 @@ export const Knowledge = ({ user }) => {
     }
   };
 
-  // Bulk check handler
   const handleSelectCheckbox = (id) => {
     setSelectedIds(prev => 
       prev.includes(id) ? prev.filter(item => item !== id) : [...prev, id]
     );
   };
 
-  // Bulk delete execution
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return;
     if (!window.confirm(`Are you sure you want to delete these ${selectedIds.length} laws?`)) return;
@@ -241,7 +387,6 @@ export const Knowledge = ({ user }) => {
     }
   };
 
-  // Delete all execution
   const handleDeleteAll = async () => {
     if (!window.confirm('⚠️ WARNING: This will delete ALL legal articles in the system. Are you completely sure?')) return;
     try {
@@ -279,7 +424,9 @@ export const Knowledge = ({ user }) => {
           </h1>
           <p className="text-muted-foreground mt-1">Browse Philippine legal articles and statutes</p>
         </div>
-        {user?.role === 'admin' && (
+
+        {/* Both Admin and Super Admin can manage articles */}
+        {isStaff && (
           <div className="flex items-center gap-2">
             <button
               onClick={() => { setShowAddForm(!showAddForm); setShowDeleteForm(false); setShowEditForm(false); }}
@@ -297,40 +444,14 @@ export const Knowledge = ({ user }) => {
         )}
       </div>
 
-      {user?.role === 'admin' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <AdminSettingsControl />
-          
-          <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20 mb-6">
-            <CardContent className="pt-6">
-              <h3 className="font-serif font-semibold text-primary mb-4">Create New Admin Account</h3>
-              <form onSubmit={handleCreateAdmin} className="flex flex-col sm:flex-row gap-3">
-                <Input 
-                  placeholder="Username" 
-                  value={newAdmin.username}
-                  onChange={(e) => setNewAdmin({...newAdmin, username: e.target.value})}
-                  required
-                />
-                <Input 
-                  type="password"
-                  placeholder="Password" 
-                  value={newAdmin.password}
-                  onChange={(e) => setNewAdmin({...newAdmin, password: e.target.value})}
-                  required
-                />
-                <button 
-                  type="submit" 
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-sm text-sm hover:bg-primary/90 whitespace-nowrap"
-                >
-                  Create Admin
-                </button>
-              </form>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+      {/* SYSTEM CONFIGURATION */}
+      {isStaff && <AdminSettingsControl />}
 
-      {showEditForm && user?.role === 'admin' && editingLaw && (
+      {/* SUPER ADMIN ONLY: User Management & Admin Creator */}
+      {isSuperAdmin && <UserManagementControl currentUser={user} />}
+
+      {/* EDIT FORM */}
+      {showEditForm && isStaff && editingLaw && (
         <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-amber-500/30">
           <CardContent className="pt-6 space-y-3">
             <h3 className="font-serif font-semibold text-amber-600">Edit Legal Article</h3>
@@ -400,7 +521,8 @@ export const Knowledge = ({ user }) => {
         </Card>
       )}
 
-      {showAddForm && user?.role === 'admin' && (
+      {/* ADD LAW FORM */}
+      {showAddForm && isStaff && (
         <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)]">
            <CardContent className="pt-6 space-y-3">
             <h3 className="font-serif font-semibold">Add New Legal Article</h3>
@@ -505,8 +627,8 @@ export const Knowledge = ({ user }) => {
         </Card>
       )}
 
-      {/* NEW BULK & MASS DELETE ACTION BAR */}
-      {showDeleteForm && user?.role === 'admin' && (
+      {/* BULK & MASS DELETE ACTION BAR */}
+      {showDeleteForm && isStaff && (
         <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-destructive/20 bg-destructive/5">
           <CardContent className="pt-6 flex flex-col sm:flex-row items-center justify-between gap-4">
             <div>
@@ -532,6 +654,7 @@ export const Knowledge = ({ user }) => {
         </Card>
       )}
 
+      {/* SEARCH AND LISTINGS */}
       <Card className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)]">
         <CardHeader>
           <div className="flex flex-col md:flex-row gap-4">
@@ -578,8 +701,7 @@ export const Knowledge = ({ user }) => {
                   className="rounded-sm border hover:bg-muted/30 transition-colors flex items-center px-4"
                   data-testid="law-item"
                 >
-                  {/* Checkbox enabled dynamically when Delete mode is active */}
-                  {user?.role === 'admin' && showDeleteForm && (
+                  {isStaff && showDeleteForm && (
                     <input 
                       type="checkbox" 
                       checked={selectedIds.includes(law.id)}
@@ -637,7 +759,7 @@ export const Knowledge = ({ user }) => {
                           </span>
                           
                           <div className="flex items-center gap-3">
-                            {user?.role === 'admin' && (
+                            {isStaff && (
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
