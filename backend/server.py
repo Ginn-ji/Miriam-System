@@ -28,6 +28,9 @@ import bcrypt
 # Import the external synonyms dictionary
 from synonyms import LEGAL_SYNONYMS
 
+# Import the manual IR evaluation metrics module
+from metrics import ManualEvaluationRequest, calculate_ir_metrics
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -149,6 +152,11 @@ class LegalKnowledge(BaseModel):
 
 class ChatLimitRequest(BaseModel):
     new_limit: int
+
+class SavedTestCase(BaseModel):
+    test_id: str
+    query: str
+    expected_article: str
 
 LegalKnowledge.model_rebuild()
 
@@ -333,11 +341,20 @@ async def update_legal_knowledge(law_id: str, law: LegalKnowledge, background_ta
 async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(None), user_id: Optional[str] = Form(None)):
     try:
         session_id = session_id or str(uuid.uuid4())
+        
+        # --- NEW: 1,000 Word Limit Check for Chatbot ---
+        if len(message.split()) > 1000:
+            return ChatResponse(
+                response="Your query is too long. Please keep your question under 1,000 words.", 
+                session_id=session_id, 
+                laws=[]
+            )
+        # -----------------------------------------------
+            
         message_text = message.lower()
             
         if not search_engine.laws or search_engine.vectorizer is None:
             return ChatResponse(response="System is initializing or no laws are available. Please try again in a moment.", session_id=session_id, laws=[])
-        
         # 1. EXPAND PHRASES AND SYNONYMS FIRST (Before Translation)
         expanded_keywords = []
         raw_words = message_text.split()
@@ -522,6 +539,52 @@ async def get_stats():
     sessions = len(await db.chat_history.distinct("session_id"))
     laws = await db.legal_knowledge.count_documents({})
     return {"chat_sessions": sessions, "legal_articles": laws}
+
+# ==================== TEST CASE DATABASE CLOUD ROUTES ====================
+@api_router.get("/admin/metrics/test-cases")
+async def get_test_cases():
+    """Fetches all saved benchmark test cases from the cloud database."""
+    cases = await db.test_cases.find({}, {"_id": 0}).to_list(1000)
+    return {"test_cases": cases}
+
+@api_router.post("/admin/metrics/test-cases")
+async def add_test_case(test_case: SavedTestCase):
+    """Saves a new test case to the cloud database."""
+    case_dict = test_case.model_dump()
+    
+    # Ensure no duplicate test IDs exist
+    existing = await db.test_cases.find_one({"test_id": case_dict["test_id"]})
+    if existing:
+        raise HTTPException(status_code=400, detail="Test ID already exists.")
+        
+    await db.test_cases.insert_one(case_dict)
+    return {"message": "Test case saved to cloud database."}
+
+@api_router.delete("/admin/metrics/test-cases/{test_id}")
+async def delete_test_case(test_id: str):
+    """Deletes a test case from the cloud database."""
+    result = await db.test_cases.delete_one({"test_id": test_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Test case not found.")
+    return {"message": "Test case deleted."}
+
+
+@api_router.post("/admin/metrics/evaluate")
+async def evaluate_search_metrics(payload: ManualEvaluationRequest, requester_id: str):
+    """Runs manually-entered test cases against the live search engine and returns
+    precision/recall/F1/MRR metrics. Only accessible by admins and super_admins."""
+    requester = await db.users.find_one({"id": requester_id})
+
+    if not requester or requester.get("role") not in ["admin", "super_admin"]:
+        raise HTTPException(status_code=403, detail="Access Denied: Only Admins can run metric evaluations.")
+
+    if not payload.test_cases:
+        raise HTTPException(status_code=400, detail="No test cases provided.")
+
+    if search_engine.vectorizer is None or search_engine.bm25 is None:
+        raise HTTPException(status_code=400, detail="Search models are not trained yet. Add legal knowledge first.")
+
+    return calculate_ir_metrics(search_engine, payload.test_cases)
 
 @api_router.post("/login")
 async def login(request: LoginRequest):

@@ -1,5 +1,3 @@
-# synonyms.py
-
 LEGAL_SYNONYMS = {
     # =========================
     # PHRASES

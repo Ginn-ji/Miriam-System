@@ -58,26 +58,26 @@ export const Dashboard = ({ user }) => {
     : baseCards;
 
   return (
-    <div className="space-y-8" data-testid="dashboard">
+    <div className="dashboard-container" data-testid="dashboard">
       <div>
-        <h1 className="text-4xl md:text-5xl font-serif font-bold tracking-tight text-primary" data-testid="dashboard-title">
+        <h1 className="dashboard-title" data-testid="dashboard-title">
           {t('welcome')}
         </h1>
-        <p className="text-lg text-muted-foreground mt-2">{t('welcomeDesc')}</p>
+        <p className="dashboard-subtitle">{t('welcomeDesc')}</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="stats-grid">
         {statCards.map((stat, idx) => {
           const Icon = stat.icon;
           return (
-            <Card key={stat.id || idx} className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)]" data-testid={`stat-card-${idx}`}>
+            <Card key={stat.id || idx} className="card-elevated" data-testid={`stat-card-${idx}`}>
               <CardContent className="pt-6">
-                <div className="flex items-center justify-between">
+                <div className="stat-card-body">
                   <div>
-                    <p className="text-sm text-muted-foreground">{stat.label}</p>
-                    <p className="text-3xl font-bold mt-2">{stat.value}</p>
+                    <p className="stat-label">{stat.label}</p>
+                    <p className="stat-value">{stat.value}</p>
                   </div>
-                  <Icon className={`h-10 w-10 ${stat.color}`} />
+                  <Icon className={`icon-10 ${stat.color}`} />
                 </div>
               </CardContent>
             </Card>
@@ -85,34 +85,34 @@ export const Dashboard = ({ user }) => {
         })}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="quick-actions-row">
         {/* Quick Actions Card */}
         <Card
-          className="shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] bg-gradient-to-br from-primary/5 to-primary/10"
+          className="quick-actions-card"
           data-testid="quick-actions-card"
         >
           <CardHeader>
             <CardTitle className="font-serif">Quick Actions</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-3">
+          <CardContent className="quick-actions-list">
             <Link to="/chat" className="block">
-              <Button variant="outline" className="w-full justify-start" data-testid="quick-chat-btn">
-                <MessageSquare className="h-4 w-4 mr-2" />
+              <Button variant="outline" className="quick-action-btn" data-testid="quick-chat-btn">
+                <MessageSquare className="icon-4 mr-2" />
                 {t('askLegalQuestion')}
               </Button>
             </Link>
 
             <Link to="/knowledge" className="block">
-              <Button variant="outline" className="w-full justify-start" data-testid="quick-knowledge-btn">
-                <BookOpen className="h-4 w-4 mr-2" />
+              <Button variant="outline" className="quick-action-btn" data-testid="quick-knowledge-btn">
+                <BookOpen className="icon-4 mr-2" />
                 {t('knowledge')}
               </Button>
             </Link>
 
             {user?.role !== 'guest' && (
               <Link to="/history" className="block">
-                <Button variant="outline" className="w-full justify-start" data-testid="quick-history-btn">
-                  <HistoryIcon className="h-4 w-4 mr-2" />
+                <Button variant="outline" className="quick-action-btn" data-testid="quick-history-btn">
+                  <HistoryIcon className="icon-4 mr-2" />
                   {t('history')}
                 </Button>
               </Link>

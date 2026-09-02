@@ -47,6 +47,437 @@ code {
     }
 }
 
+/* ====================================================================
+   COMPONENT STYLES
+   Every Tailwind utility cluster used by Knowledge.js and Dashboard.js
+   lives here as a named class, so those files only carry logic and
+   semantic class names — no inline utility strings.
+   ==================================================================== */
+@layer components {
+
+    /* ---- shared primitives (cards, buttons, tables) ---- */
+    .card-elevated {
+        @apply shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)];
+    }
+
+    .btn-primary-sm {
+        @apply px-4 py-2 bg-primary text-primary-foreground rounded-sm text-sm font-medium hover:bg-primary/90 transition-colors;
+    }
+
+    .btn-destructive-sm {
+        @apply px-4 py-2 bg-destructive text-destructive-foreground rounded-sm text-sm font-medium hover:bg-destructive/90 transition-colors;
+    }
+
+    .btn-primary-block {
+        @apply w-full py-2 bg-primary text-primary-foreground rounded-sm text-sm hover:bg-primary/90 font-medium;
+    }
+
+    .btn-save {
+        @apply px-3 py-1.5 bg-primary text-primary-foreground text-xs rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50;
+    }
+
+    .btn-amber {
+        @apply px-4 py-2 bg-amber-600 text-white rounded-sm text-sm hover:bg-amber-700;
+    }
+
+    .btn-muted {
+        @apply px-4 py-2 bg-muted text-muted-foreground rounded-sm text-sm hover:bg-muted/80;
+    }
+
+    .btn-choose-file {
+        @apply px-3 py-1 bg-muted rounded-sm text-xs hover:bg-muted/80;
+    }
+
+    .btn-delete-selected {
+        @apply px-4 py-2 bg-destructive text-destructive-foreground rounded-sm text-sm hover:bg-destructive/90 disabled:opacity-50;
+    }
+
+    .btn-delete-all {
+        @apply px-4 py-2 bg-black text-white rounded-sm text-sm hover:bg-gray-800;
+    }
+
+    .btn-edit-law {
+        @apply px-3 py-1 bg-amber-100 text-amber-800 rounded-sm text-xs hover:bg-amber-200 transition-colors font-medium;
+    }
+
+    .btn-add {
+        @apply px-4 py-2 bg-primary text-primary-foreground rounded-sm text-sm font-medium hover:bg-primary/90 transition-colors flex items-center justify-center gap-1;
+    }
+
+    .btn-header-primary {
+        @apply flex items-center gap-2 px-4 py-2 bg-primary text-primary-foreground rounded-sm text-sm font-medium hover:bg-primary/90 transition-colors;
+    }
+
+    .btn-header-destructive {
+        @apply flex items-center gap-2 px-4 py-2 bg-destructive text-destructive-foreground rounded-sm text-sm font-medium hover:bg-destructive/90 transition-colors;
+    }
+
+    .btn-save-law {
+        @apply px-4 py-2 bg-primary text-primary-foreground rounded-sm text-sm hover:bg-primary/90;
+    }
+
+    .edit-card-title {
+        @apply font-serif font-semibold text-amber-600;
+    }
+
+    .link-remove {
+        @apply text-xs text-destructive hover:underline;
+    }
+
+    .remove-btn {
+        @apply text-destructive hover:text-destructive/80;
+    }
+
+    .admin-table {
+        @apply w-full text-left text-sm;
+    }
+    .admin-table thead {
+        @apply bg-muted text-muted-foreground border-b text-xs uppercase;
+    }
+    .admin-table tbody {
+        @apply divide-y;
+    }
+    .admin-table th {
+        @apply p-2.5;
+    }
+    .admin-table td {
+        @apply p-2.5;
+    }
+
+    .table-wrap {
+        @apply max-h-60 overflow-y-auto border rounded-sm;
+    }
+    .table-wrap-tall {
+        @apply border rounded-sm overflow-x-auto max-h-72 overflow-y-auto;
+    }
+    .table-wrap-short {
+        @apply border rounded-sm mb-4 max-h-40 overflow-y-auto;
+    }
+
+    .form-stack {
+        @apply space-y-3;
+    }
+    .form-grid-2 {
+        @apply grid grid-cols-1 md:grid-cols-2 gap-3;
+    }
+    .form-actions {
+        @apply flex gap-2 pt-1;
+    }
+    .textarea-field {
+        @apply w-full min-h-[150px] p-2 text-sm border rounded-sm bg-background resize-none;
+    }
+    .textarea-field-sm {
+        @apply w-full min-h-[100px] p-2 text-sm border rounded-sm bg-background resize-none;
+    }
+
+    /* ---- page header (Knowledge page) ---- */
+    .page-header {
+        @apply flex items-center justify-between;
+    }
+    .page-title {
+        @apply text-4xl font-serif font-bold tracking-tight text-primary;
+    }
+    .page-subtitle {
+        @apply text-muted-foreground mt-1;
+    }
+    .header-actions {
+        @apply flex items-center gap-2;
+    }
+
+    /* ---- AdminSettingsControl ---- */
+    .settings-card {
+        @apply shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20 mb-6;
+    }
+    .settings-card-body {
+        @apply pt-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4;
+    }
+    .settings-info {
+        @apply flex items-center gap-3;
+    }
+    .settings-icon-wrap {
+        @apply p-2 bg-primary/10 text-primary rounded-md;
+    }
+    .settings-title {
+        @apply font-semibold font-serif text-gray-900;
+    }
+    .settings-desc {
+        @apply text-xs text-muted-foreground;
+    }
+    .settings-control {
+        @apply flex items-center gap-3;
+    }
+    .settings-label {
+        @apply text-sm font-medium text-gray-700;
+    }
+    .settings-input {
+        @apply w-16 p-1 border rounded-md text-center text-sm;
+    }
+
+    /* ---- UserManagementControl ---- */
+    .panel-grid {
+        @apply grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6;
+    }
+    .panel-card {
+        @apply shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20;
+    }
+    .panel-card-wide {
+        @apply shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20 lg:col-span-2;
+    }
+    .panel-header {
+        @apply flex items-center gap-2 mb-4;
+    }
+    .panel-title {
+        @apply font-serif font-semibold text-primary;
+    }
+    .user-name-cell {
+        @apply font-medium flex items-center gap-2;
+    }
+    .role-icon-dot {
+        @apply h-2 w-2 rounded-full bg-gray-400;
+    }
+    .user-you-tag {
+        @apply text-[10px] text-muted-foreground;
+    }
+    .role-badge {
+        @apply px-2 py-0.5 text-xs rounded-sm;
+    }
+    .role-badge--super-admin {
+        @apply bg-destructive/10 text-destructive font-semibold;
+    }
+    .role-badge--admin {
+        @apply bg-primary/10 text-primary font-semibold;
+    }
+    .role-badge--user {
+        @apply bg-gray-100 text-gray-700;
+    }
+    .role-select {
+        @apply text-xs border rounded p-1 bg-background;
+    }
+    .owner-tag {
+        @apply text-xs text-muted-foreground italic;
+    }
+
+    /* ---- MetricsEvaluationControl (Cloud Synced) ---- */
+    .metrics-card {
+        @apply shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-primary/20 mb-6 bg-slate-50/50;
+    }
+    .metrics-form-row { 
+        @apply flex gap-2 mb-6; 
+    }
+    .metrics-input { 
+        @apply flex-1 border p-2 text-sm rounded-sm focus:outline-primary bg-white; 
+    }
+    .metrics-input-wide { 
+        @apply flex-[2] border p-2 text-sm rounded-sm focus:outline-primary bg-white; 
+    }
+    .metrics-btn-dark { 
+        @apply bg-[#1e293b] text-white px-4 py-2 text-sm font-medium hover:bg-slate-800 transition rounded-sm; 
+    }
+    .metrics-btn-execute { 
+        @apply bg-[#1e293b] text-white px-6 py-2 text-sm font-bold rounded-sm mb-6 hover:bg-slate-800 disabled:opacity-50 transition; 
+    }
+    .metrics-table-wrap { 
+        @apply border rounded-sm overflow-hidden mb-4 bg-white; 
+    }
+    .metrics-table { 
+        @apply w-full text-left text-sm; 
+    }
+    .metrics-thead { 
+        @apply bg-gray-100 text-gray-600 text-xs uppercase font-bold border-b; 
+    }
+    .metrics-th { 
+        @apply p-3; 
+    }
+    .metrics-tr { 
+        @apply hover:bg-gray-50 transition-colors; 
+    }
+    .metrics-td { 
+        @apply p-3 text-gray-700; 
+    }
+    .metrics-td-bold { 
+        @apply p-3 font-semibold text-gray-700; 
+    }
+    .metrics-td-dark { 
+        @apply p-3 text-gray-800; 
+    }
+    .metrics-btn-remove { 
+        @apply text-red-500 hover:text-red-700 transition-colors; 
+    }
+    .metrics-results { 
+        @apply mt-6 space-y-4; 
+    }
+    .metrics-summary-grid { 
+        @apply grid grid-cols-2 sm:grid-cols-5 gap-4; 
+    }
+    .metrics-summary-card { 
+        @apply border p-4 text-center bg-white rounded-sm shadow-sm; 
+    }
+    .metrics-summary-label { 
+        @apply text-xs text-gray-500 uppercase tracking-wider; 
+    }
+    .metrics-summary-value { 
+        @apply text-xl font-bold mt-1 text-slate-800 font-serif; 
+    }
+    .metrics-result-wrap { 
+        @apply mt-4 border rounded-sm overflow-x-auto bg-white; 
+    }
+    .panel-content { 
+        @apply pt-6; 
+    }
+    .panel-icon { 
+        @apply h-5 w-5 text-primary; 
+    }
+
+    /* ---- Edit / Add law forms ---- */
+    .edit-card {
+        @apply shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-amber-500/30;
+    }
+    .law-form-content { 
+        @apply pt-6 space-y-3; 
+    }
+    .upload-dropzone {
+        @apply border-2 border-dashed rounded-sm p-3 text-center;
+    }
+    .upload-hint {
+        @apply text-xs text-muted-foreground mb-2;
+    }
+    .upload-file-row {
+        @apply border rounded-sm p-3 flex items-center justify-between;
+    }
+    .upload-file-name {
+        @apply text-sm text-primary;
+    }
+
+    /* ---- Bulk delete bar ---- */
+    .bulk-bar {
+        @apply shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] border-destructive/20 bg-destructive/5;
+    }
+    .bulk-bar-body {
+        @apply pt-6 flex flex-col sm:flex-row items-center justify-between gap-4;
+    }
+    .bulk-title {
+        @apply font-serif font-semibold text-destructive;
+    }
+    .bulk-desc {
+        @apply text-xs text-muted-foreground;
+    }
+    .bulk-actions {
+        @apply flex gap-2;
+    }
+
+    /* ---- Search + law listing ---- */
+    .search-toolbar {
+        @apply flex flex-col md:flex-row gap-4;
+    }
+    .search-input-group {
+        @apply flex-1 flex items-center gap-2;
+    }
+    .search-input {
+        @apply flex h-10 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm;
+    }
+    .law-list {
+        @apply space-y-3;
+    }
+    .law-item {
+        @apply rounded-sm border hover:bg-muted/30 transition-colors flex items-center px-4;
+    }
+    .law-checkbox {
+        @apply mr-3 h-4 w-4 accent-primary cursor-pointer;
+    }
+    .law-row {
+        @apply flex items-center justify-between py-4 cursor-pointer;
+    }
+    .law-title-group {
+        @apply flex items-center gap-3;
+    }
+    .law-title {
+        @apply font-serif font-semibold text-base;
+    }
+    .law-category-label {
+        @apply text-xs text-muted-foreground;
+    }
+    .law-badges {
+        @apply flex items-center gap-2;
+    }
+    .law-detail {
+        @apply pb-4 border-t pt-3 space-y-3;
+    }
+    .law-detail-label {
+        @apply text-xs font-medium text-muted-foreground mb-1;
+    }
+    .law-content-text {
+        @apply text-sm leading-relaxed;
+    }
+    .law-tag-header {
+        @apply flex items-center gap-1 mb-1;
+    }
+    .law-tags {
+        @apply flex flex-wrap gap-2;
+    }
+    .law-tag {
+        @apply px-2 py-1 rounded-sm bg-muted text-muted-foreground text-xs;
+    }
+    .law-category-badge {
+        @apply px-2 py-1 rounded-sm bg-primary/10 text-primary text-xs font-medium;
+    }
+    .law-footer {
+        @apply flex items-center justify-between pt-1;
+    }
+    .law-meta {
+        @apply flex items-center gap-3;
+    }
+    .law-date {
+        @apply flex items-center gap-1 text-xs text-muted-foreground;
+    }
+    .empty-state {
+        @apply text-center py-12;
+    }
+    .empty-state-icon {
+        @apply h-16 w-16 text-muted-foreground mx-auto mb-4;
+    }
+
+    /* ---- icon sizing (reused across both files) ---- */
+    .icon-3 { @apply h-3 w-3; }
+    .icon-4 { @apply h-4 w-4; }
+    .icon-5 { @apply h-5 w-5; }
+    .icon-10 { @apply h-10 w-10; }
+
+    /* ---- Dashboard.js ---- */
+    .dashboard-container {
+        @apply space-y-8;
+    }
+    .dashboard-title {
+        @apply text-4xl md:text-5xl font-serif font-bold tracking-tight text-primary;
+    }
+    .dashboard-subtitle {
+        @apply text-lg text-muted-foreground mt-2;
+    }
+    .stats-grid {
+        @apply grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4;
+    }
+    .stat-card-body {
+        @apply flex items-center justify-between;
+    }
+    .stat-label {
+        @apply text-sm text-muted-foreground;
+    }
+    .stat-value {
+        @apply text-3xl font-bold mt-2;
+    }
+    .quick-actions-row {
+        @apply grid grid-cols-1 lg:grid-cols-2 gap-6;
+    }
+    .quick-actions-card {
+        @apply shadow-[0_1px_3px_rgba(0,0,0,0.12),0_1px_2px_rgba(0,0,0,0.24)] bg-gradient-to-br from-primary/5 to-primary/10;
+    }
+    .quick-actions-list {
+        @apply space-y-3;
+    }
+    .quick-action-btn {
+        @apply w-full justify-start;
+    }
+}
+
 @layer base {
     [data-debug-wrapper="true"] {
         display: contents !important;
