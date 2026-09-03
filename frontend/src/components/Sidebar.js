@@ -7,16 +7,16 @@ import {
   MessageSquare, 
   History as HistoryIcon, 
   BookOpen,
-  Globe,
   LogOut
 } from 'lucide-react';
 
 export const Sidebar = ({ user, onLogout }) => {
   const location = useLocation();
-  const { t, language, toggleLanguage } = useLanguage();
+  const { t } = useLanguage();
 
   return (
-    <div className="w-64 flex-shrink-0 border-r bg-background hidden md:flex md:flex-col" data-testid="sidebar">
+    // REMOVED 'hidden md:flex' and ADDED 'flex flex-col h-full'
+    <div className="w-64 flex-shrink-0 border-r bg-background flex flex-col h-full" data-testid="sidebar">
       <div className="p-6 border-b">
         <h1 className="text-2xl font-serif font-bold text-primary" data-testid="app-title">
           {t('appName')}
@@ -78,7 +78,7 @@ export const Sidebar = ({ user, onLogout }) => {
           className="w-full flex items-center justify-center gap-2 text-destructive"
         >
           <LogOut className="h-4 w-4" />
-          Logout ({user.name})
+          Logout ({user.username || user.name || 'Guest'})
         </Button>
       </div>
     </div>

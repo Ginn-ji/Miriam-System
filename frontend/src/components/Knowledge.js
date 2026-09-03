@@ -857,7 +857,7 @@ export const Knowledge = ({ user }) => {
         <Card className="bulk-bar">
           <CardContent className="bulk-bar-body">
             <div>
-              <h3 className="bulk-title">Bulk Management & Deletion</h3>
+              <h3 className="bulk-title">Article Deletion</h3>
               <p className="bulk-desc">Select individual checkboxes from the list below or clear everything.</p>
             </div>
             <div className="bulk-actions">
