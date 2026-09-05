@@ -52,10 +52,13 @@ api_router = APIRouter(prefix="/api")
 class SearchEngine:
     laws = []
     corpus = []
+    title_corpus = []          # stores ONLY article number + title + tags (no body)
+    article_numbers = []       # stores the raw article number string per law (e.g. "article 1")
     tokenized_corpus = []
     vocabulary = set()
     vectorizer = None
     tfidf_matrix = None
+    vocab_idf = {}
     bm25 = None
     highest_bm25 = 0.0
 
@@ -73,6 +76,8 @@ async def train_search_models():
         logger.warning("No laws found in database to train.")
         search_engine.laws = []
         search_engine.corpus = []
+        search_engine.title_corpus = []
+        search_engine.article_numbers = []
         search_engine.tokenized_corpus = []
         search_engine.vocabulary = set()
         search_engine.vectorizer = None
@@ -82,18 +87,10 @@ async def train_search_models():
 
     search_engine.laws = all_laws
     corpus = []
+    title_corpus = []
+    article_numbers = []
     tokenized_corpus = []
     
-    for law in all_laws:
-        body = " ".join(law.get('chunks', [])) if law.get('chunks') else law.get('content', '')
-        raw_doc_text = f"{law.get('article', '')} {law.get('title', '')} {body}".lower()
-        
-        # Strip punctuation for cleaner exact-match tokenization
-        clean_doc_text = re.sub(r'[^\w\s]', '', raw_doc_text)
-        
-        corpus.append(clean_doc_text)
-        tokenized_corpus.append(clean_doc_text.split())
-        
     stopwords = {
         "ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "naman", "lang", "daw", "din", "rin",
         "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "to", "for", "with",
@@ -101,18 +98,50 @@ async def train_search_models():
         "give", "given", "gave", "take", "took", "get", "got", "make", "made", "know", "knew", "ask", "asked", "tell", "told", "say", "said", "just", "like", "want", "went", "go", "off", "up", "down"
     }
     
-    search_engine.vocabulary = set([word for doc in tokenized_corpus for word in doc if word not in stopwords and len(word) > 2])
+    for law in all_laws:
+        body = " ".join(law.get('chunks', [])) if law.get('chunks') else law.get('content', '')
+        tags = law.get('tags', [])
+        tags_text = " ".join(tags) if isinstance(tags, list) else str(tags)
+        article_str = law.get('article', '') or ''
+        title_str = law.get('title', '') or ''
+        category_str = law.get('category', '') or ''
+        
+        # --- Full corpus: article + title (3x boosted) + category + tags (2x boosted) + body ---
+        # Repeating title/tags gives them higher TF-IDF weight vs body noise
+        raw_doc_text = f"{article_str} {title_str} {article_str} {title_str} {category_str} {tags_text} {tags_text} {body}".lower()
+        clean_doc_text = re.sub(r'[^\w\s]', '', raw_doc_text)
+        corpus.append(clean_doc_text)
+        
+        # --- Title-only corpus: article number + title + category + tags only (no body) ---
+        raw_title_text = f"{article_str} {title_str} {category_str} {tags_text}".lower()
+        clean_title_text = re.sub(r'[^\w\s]', '', raw_title_text)
+        title_corpus.append(clean_title_text)
+        
+        # --- Store normalized article number for direct lookup ---
+        article_numbers.append(re.sub(r'[^\w\s]', '', article_str.lower()).strip())
+        
+        # --- BM25 tokenized corpus: include stopword filtering ---
+        tokenized_corpus.append([w for w in clean_doc_text.split() if w not in stopwords and len(w) > 1])
+        
+    search_engine.vocabulary = set([
+        word for doc in tokenized_corpus for word in doc
+        if word not in stopwords and (len(word) > 2 or word.isdigit())
+    ])
     search_engine.corpus = corpus
+    search_engine.title_corpus = title_corpus
+    search_engine.article_numbers = article_numbers
     search_engine.tokenized_corpus = tokenized_corpus
     
-    # Train TF-IDF with min_df=1 to keep unique article titles
-    search_engine.vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words='english', min_df=1)
+    # Train TF-IDF with bilingual stopwords
+    search_engine.vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words=list(stopwords), min_df=1)
     search_engine.tfidf_matrix = search_engine.vectorizer.fit_transform(corpus)
+    search_engine.vocab_idf = dict(zip(search_engine.vectorizer.get_feature_names_out(), search_engine.vectorizer.idf_))
     
-    # Train BM25
+    # Train BM25 on stop-word-filtered tokenized corpus
     search_engine.bm25 = BM25Okapi(tokenized_corpus)
     
     logger.info("Search Models successfully trained and loaded into memory!")
+
 
 # ==================== MODELS ====================
 
@@ -178,6 +207,93 @@ def detect_language_simple(text: str) -> str:
         return detect(text[:1000])
     except:
         return "unknown"
+
+# --- Conversational noise & filler phrases in Filipino/Taglish ---
+CONVERSATIONAL_FILLERS = [
+    r"\bano po ba ang\b", r"\bano po ba\b", r"\bano po\b", r"\bano ba ang\b", r"\bano ba\b",
+    r"\bpwede po ba akong\b", r"\bpwede po bang\b", r"\bpwede po ba\b", r"\bpwede bang\b", r"\bpwede ba akong\b", r"\bpwede ba\b",
+    r"\btanong ko lang po\b", r"\btanong ko lang\b", r"\bgusto ko lang itanong\b", r"\bgusto ko lang malaman\b",
+    r"\blegal po ba na\b", r"\blegal po ba\b", r"\blegal ba na\b", r"\blegal ba\b",
+    r"\bmeron po ba akong\b", r"\bmayroon po ba akong\b", r"\bmeron ba akong\b",
+    r"\bano ang dapat kong gawin kapag\b", r"\bano dapat gawin kapag\b", r"\bano gagawin kapag\b",
+    r"\bkasi naman\b", r"\bbigla na lang\b", r"\bbasta na lang\b", r"\blang po\b", r"\bpo ba\b"
+]
+
+def clean_conversational_noise(text: str) -> str:
+    """Strips polite conversational preambles, expands hyphens, and normalizes Tagalog ligatures."""
+    cleaned = text.lower().replace('"', ' ').replace("'", " ")
+    for pattern in CONVERSATIONAL_FILLERS:
+        cleaned = re.sub(pattern, " ", cleaned)
+    # Expand hyphens into spaces so compound verbs/nouns (e.g. "mag-inspect" -> "mag inspect") separate cleanly
+    cleaned = cleaned.replace("-", " ")
+    # Normalize standard Tagalog enclitic ligatures (e.g. "pwedeng" -> "pwede", "maling" -> "mali")
+    cleaned = re.sub(r'\b(\w{4,})ng\b', r'\1', cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+def strip_filipino_affixes(word: str) -> str:
+    """Lightweight rule-based morphological stemmer for Filipino verbs and nouns."""
+    w = word.lower()
+    if len(w) <= 4:
+        return w
+    # Infix -in- (e.g. tinanggal -> tanggal, kinakaltas -> kaltas, sinibak -> sibak)
+    if len(w) > 4 and w[1:3] == 'in' and w[0] not in 'aeiou':
+        w = w[0] + w[3:]
+    # Infix -um- (e.g. pumasok -> pasok)
+    if len(w) > 4 and w[1:3] == 'um' and w[0] not in 'aeiou':
+        w = w[0] + w[3:]
+    # Prefixes: pinag-, ipag-, pina-, nag-, mag-, pag-
+    for pre in ['pinag', 'ipag', 'pina', 'nag', 'mag', 'pag']:
+        if w.startswith(pre) and len(w) > len(pre) + 2:
+            w = w[len(pre):]
+            break
+    # Reduplication (e.g. tatanggal -> tanggal, papasok -> pasok)
+    if len(w) >= 6 and w[:2] == w[2:4]:
+        w = w[2:]
+    # Suffixes: -han, -hin, -an, -in
+    for suf in ['han', 'hin', 'an', 'in']:
+        if w.endswith(suf) and len(w) > len(suf) + 3:
+            w = w[:-len(suf)]
+            break
+    return w
+
+TAGALOG_MARKERS = {
+    "ang", "ng", "sa", "na", "mga", "ko", "mo", "ako", "ka", "siya", "kami", "tayo", "kayo", "sila",
+    "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung",
+    "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "naman", "lang", "daw", "din", "rin",
+    "may", "wala", "walang", "hindi", "ayaw", "trabaho", "sahod", "sweldo", "suweldo", "kaltas", "tanggal",
+    "tinanggal", "tinanggalan", "sinibak", "pinaalis", "nagresign", "overtime", "buntis", "amo", "boss"
+}
+
+def is_tagalog_or_taglish(text: str) -> bool:
+    """Checks if text contains Tagalog grammatical markers or vocabulary."""
+    tokens = set(re.sub(r'[^\w\s]', '', text.lower()).split())
+    if tokens & TAGALOG_MARKERS:
+        return True
+    detected = detect_language_simple(text)
+    return detected in ['tl', 'unknown', 'id', 'ms', 'sk', 'cy', 'hr']
+
+async def get_or_create_translation(text: str) -> str:
+    """Fetches translation with persistent MongoDB cache for 100% determinism and speed."""
+    if not text.strip():
+        return ""
+    try:
+        cached = await db.translation_cache.find_one({"query": text})
+        if cached:
+            return cached.get("translation", "")
+    except Exception:
+        pass
+    
+    try:
+        translated = GoogleTranslator(source='tl', target='en').translate(text)
+        if translated:
+            try:
+                await db.translation_cache.insert_one({"query": text, "translation": translated})
+            except Exception:
+                pass
+            return translated
+    except Exception as e:
+        logger.warning(f"Translation module failed: {e}")
+    return ""
 
 # ==================== SYSTEM SETTINGS ====================
 
@@ -351,33 +467,53 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             )
         # -----------------------------------------------
             
-        message_text = message.lower()
+        # --- STEP 1: CONVERSATIONAL NOISE REDUCTION ---
+        clean_message = clean_conversational_noise(message)
+        message_text = clean_message.lower() if clean_message else message.lower()
             
         if not search_engine.laws or search_engine.vectorizer is None:
             return ChatResponse(response="System is initializing or no laws are available. Please try again in a moment.", session_id=session_id, laws=[])
-        # 1. EXPAND PHRASES AND SYNONYMS FIRST (Before Translation)
+
+        # =========================================================
+        # STEP 0: DIRECT ARTICLE NUMBER LOOKUP
+        # If the query matches "Article N" / "Art. N", find and prepend
+        # that exact article BEFORE any scoring pipeline runs.
+        # This completely bypasses TF-IDF / BM25 / threshold guards.
+        # =========================================================
+        article_num_match = re.search(r'\barticle\s+(\d+)\b|\bart\.?\s*(\d+)\b', message.lower())
+        direct_article_number = None
+        direct_article_index = None
+        if article_num_match:
+            direct_article_number = article_num_match.group(1) or article_num_match.group(2)
+            for idx, art_num in enumerate(search_engine.article_numbers):
+                stored_digits = re.search(r'\d+', art_num)
+                if stored_digits and stored_digits.group() == direct_article_number:
+                    direct_article_index = idx
+                    break
+
+        # --- STEP 2: EXPAND PHRASES AND SYNONYMS (Punctuation-free + Affix-aware) ---
         expanded_keywords = []
-        raw_words = message_text.split()
+        clean_text_no_punct = re.sub(r'[^\w\s]', ' ', message_text)
+        raw_words = clean_text_no_punct.split()
+        stemmed_words = [strip_filipino_affixes(w) for w in raw_words]
+        all_candidate_words = set(raw_words + stemmed_words)
         
         for term, english_terms in LEGAL_SYNONYMS.items():
             term_lower = term.lower()
             if " " in term_lower:
-                if term_lower in message_text:
+                if term_lower in message_text or term_lower in clean_text_no_punct:
                     expanded_keywords.extend(english_terms)
             else:
-                if term_lower in raw_words:
+                if term_lower in all_candidate_words:
                     expanded_keywords.extend(english_terms)
 
         search_text = message_text
         
-        # 2. RUN GOOGLE TRANSLATION
-        try:
-            detected_lang = detect_language_simple(search_text)
-            if detected_lang in ['tl', 'unknown']:
-                english_translation = GoogleTranslator(source='tl', target='en').translate(search_text)
-                search_text = f"{search_text} {english_translation}"
-        except Exception as e:
-            logger.warning(f"Pre-translation failed: {e}")
+        # --- STEP 3: RELIABLE LANGUAGE DETECTION & CACHED TRANSLATION ---
+        if is_tagalog_or_taglish(search_text):
+            translation = await get_or_create_translation(clean_text_no_punct)
+            if translation:
+                search_text = f"{search_text} {translation}"
 
         # Combine translated text with the safely extracted synonyms
         full_query_text = f"{search_text} {' '.join(expanded_keywords)}"
@@ -385,7 +521,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         # Strip punctuation from query for accurate matching
         clean_full_query = re.sub(r'[^\w\s]', '', full_query_text)
 
-        # 3. TOKENIZATION & STOPWORDS
+        # --- STEP 4: TOKENIZATION & STOPWORDS ---
         stopwords = {
             "ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "naman", "lang", "daw", "din", "rin",
             "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "to", "for", "with", 
@@ -393,52 +529,70 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             "give", "given", "gave", "take", "took", "get", "got", "make", "made", "know", "knew", "ask", "asked", "tell", "told", "say", "said", "just", "like", "want", "went", "go", "off", "up", "down"
         }
         
-        raw_tokens = [w.lower() for w in clean_full_query.split() if len(w) > 2 and w.lower() not in stopwords]
+        # Allow short numeric tokens through (e.g. "1", "13") for article number queries
+        raw_tokens = [w.lower() for w in clean_full_query.split()
+                      if (len(w) > 2 or w.isdigit()) and w.lower() not in stopwords]
 
-        # 4. EXACT MATCHES & LEVENSHTEIN CORRECTION
+        # --- STEP 5: EXACT MATCHES & LEVENSHTEIN FUZZY CORRECTION (Threshold d <= 2) ---
         exact_tokens = [t for t in raw_tokens if t in search_engine.vocabulary]
-
-        if not exact_tokens:
-            return ChatResponse(
-                response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.",
-                session_id=session_id, laws=[]
-            )
-
         corrected_tokens = list(exact_tokens)
         unmatched = [t for t in raw_tokens if t not in search_engine.vocabulary]
         
         for t in unmatched:
-            if len(t) >= 6 and search_engine.vocabulary:
+            if len(t) >= 4 and search_engine.vocabulary:
                 closest = min(search_engine.vocabulary, key=lambda v: Levenshtein.distance(t, v))
                 dist = Levenshtein.distance(t, closest)
-                if dist == 1 or (dist == 2 and len(t) >= 9):
+                if dist == 1 or (dist == 2 and len(t) >= 6):
                     corrected_tokens.append(closest)
+
+        # Only reject if neither exact nor fuzzy match produced any valid legal tokens
+        if not corrected_tokens:
+            return ChatResponse(
+                response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.",
+                session_id=session_id, laws=[]
+            )
         
         query_text_for_math = " ".join(corrected_tokens)
         
-        # 5. EXPLOIT CACHED MODELS (Instant Speed)
+        # --- STEP 6: EXPLOIT CACHED MODELS (Instant Speed) ---
         query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
         cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
         bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
         
         # =========================================================
-        # 🚨 MIN-MAX NORMALIZATION & COMBSUM DATA FUSION
+        # MIN-MAX NORMALIZATION & COMBSUM DATA FUSION
         # =========================================================
         bm25_array = np.array(bm25_scores)
         
-        # 1. Min-Max Normalize BM25 to a strict [0.0 to 1.0] probability
+        # Normalize BM25 to [0, 1] — use zeros (not ones) when all scores are equal
         if len(bm25_array) > 0 and np.max(bm25_array) > 0:
             bm25_min = np.min(bm25_array)
             bm25_max = np.max(bm25_array)
             if bm25_max == bm25_min:
-                bm25_norm = np.ones_like(bm25_array) 
+                bm25_norm = np.zeros_like(bm25_array)   # no signal → no boost
             else:
                 bm25_norm = (bm25_array - bm25_min) / (bm25_max - bm25_min)
         else:
             bm25_norm = np.zeros_like(bm25_array)
-            
-        # 2. CombSUM Fusion: 50% Cosine Probability + 50% BM25 Probability
-        final_scores = (cosine_scores * 0.5) + (bm25_norm * 0.5)
+
+        # --- TITLE BOOST SCORE (IDF-Weighted) ---
+        # Rare, domain-specific words (e.g. "disability", "dismissal", "inspection") give much higher boost
+        # than generic ubiquitous words (e.g. "work", "employment").
+        title_boost = np.zeros(len(search_engine.laws))
+        query_token_set = set(corrected_tokens)
+        vocab_idf = getattr(search_engine, 'vocab_idf', {})
+        for idx, title_text in enumerate(search_engine.title_corpus):
+            title_words = set(title_text.split())
+            matching_title_words = query_token_set & title_words
+            if matching_title_words:
+                title_boost[idx] = sum(vocab_idf.get(w, 1.0) for w in matching_title_words)
+
+        # Normalize title boost to [0, 1]
+        tb_max = np.max(title_boost)
+        title_boost_norm = title_boost / tb_max if tb_max > 0 else title_boost
+
+        # CombSUM Fusion: 35% TF-IDF + 40% BM25 + 25% Title Boost
+        final_scores = (cosine_scores * 0.35) + (bm25_norm * 0.40) + (title_boost_norm * 0.25)
         # =========================================================
         
         try:
@@ -447,29 +601,56 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         except:
             chat_limit = 5
         
-        top_indices = np.argsort(final_scores)[::-1][:chat_limit]
         matched_laws = []
         
-        exact_token_set = set(exact_tokens)
-        
+        # --- DIRECT ARTICLE PRE-FETCH: inject the exact article as result #1 ---
+        if direct_article_index is not None:
+            direct_law = search_engine.laws[direct_article_index].copy()
+            qs = set(corrected_tokens)
+            chunks = direct_law.get('chunks') or []
+            if chunks:
+                direct_law['best_match_chunk'] = max(
+                    chunks,
+                    key=lambda c: len(qs.intersection(set(c.lower().split()))) / max(len(c.split()), 1),
+                    default=""
+                ) or direct_law.get('simplified_text', '')
+            else:
+                direct_law['best_match_chunk'] = direct_law.get('simplified_text') or (direct_law.get('content', '') or '')[:500]
+            direct_law['accuracy'] = "100%"
+            matched_laws.append(direct_law)
+
+        top_indices = np.argsort(final_scores)[::-1]
+        query_match_tokens = set(corrected_tokens)
+
         for i in top_indices:
-            # We lower the threshold slightly because true normalized probability is stricter
+            if len(matched_laws) >= chat_limit:
+                break
+            # Skip the directly-fetched article so it isn't duplicated
+            if direct_article_index is not None and i == direct_article_index:
+                continue
             if final_scores[i] > 0.25: 
                 law_data = search_engine.laws[i].copy()
                 doc_words = set(search_engine.corpus[i].split())
-                if not (exact_token_set & doc_words):
+                if not (query_match_tokens & doc_words):
                     continue
                     
-                # The final score is now a true mathematical probability between 0.0 and 1.0
                 raw_percentage = int(final_scores[i] * 100)
-                
-                # Assign the true calculated probability to the UI
                 law_data['accuracy'] = f"{raw_percentage}%"
                 
                 qs = set(corrected_tokens)
-                law_data['best_match_chunk'] = max(law_data.get('chunks', []), key=lambda c: len(qs.intersection(set(c.lower().split()))), default="")
+                chunks = law_data.get('chunks') or []
+                if chunks:
+                    law_data['best_match_chunk'] = max(
+                        chunks,
+                        key=lambda c: len(qs.intersection(set(c.lower().split()))) / max(len(c.split()), 1),
+                        default=""
+                    ) or law_data.get('simplified_text', '')
+                else:
+                    law_data['best_match_chunk'] = law_data.get('simplified_text') or (law_data.get('content', '') or '')[:500]
                 
                 matched_laws.append(law_data)
+
+
             
         if not matched_laws:
             final_response = "I could not find any specific Philippine Labor Law matching your query. Please ensure your question is related to employment, wages, or workplace policies."
@@ -584,7 +765,13 @@ async def evaluate_search_metrics(payload: ManualEvaluationRequest, requester_id
     if search_engine.vectorizer is None or search_engine.bm25 is None:
         raise HTTPException(status_code=400, detail="Search models are not trained yet. Add legal knowledge first.")
 
-    return calculate_ir_metrics(search_engine, payload.test_cases)
+    try:
+        limit_setting = await db.settings.find_one({"key": "chat_limit"})
+        chat_limit = int(limit_setting.get("value", 3)) if limit_setting else 3
+    except:
+        chat_limit = 3
+
+    return calculate_ir_metrics(search_engine, payload.test_cases, k=chat_limit)
 
 @api_router.post("/login")
 async def login(request: LoginRequest):
@@ -616,7 +803,7 @@ async def get_chat_history(session_id: str):
 
 app.include_router(api_router)
 
-origins = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4173", "http://127.0.0.1:4173", "https://lacbot.vercel.app"]
+origins = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:4173", "http://127.0.0.1:4173", "https://lacbot.vercel.app", "https://miriam-system.vercel.app"]
 
 app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
