@@ -22,7 +22,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 from langdetect import detect, DetectorFactory
 from deep_translator import GoogleTranslator
-from sentence_transformers import CrossEncoder
 import bcrypt
 
 # Import the external synonyms dictionary
@@ -97,7 +96,7 @@ async def train_search_models():
         search_engine.bm25 = None
         return
 
-    search_engine.laws = all_laws
+    search_engine.laws = None
     corpus = []
     title_corpus = []
     article_numbers = []
