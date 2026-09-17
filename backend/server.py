@@ -52,8 +52,8 @@ api_router = APIRouter(prefix="/api")
 class SearchEngine:
     laws = []
     corpus = []
-    title_corpus = []          # stores ONLY article number + title + tags (no body)
-    article_numbers = []       # stores the raw article number string per law (e.g. "article 1")
+    title_corpus = []
+    article_numbers = []
     tokenized_corpus = []
     vocabulary = set()
     vectorizer = None
@@ -62,8 +62,17 @@ class SearchEngine:
     bm25 = None
     highest_bm25 = 0.0
     
-    # --- NEW: Initialize the Cross-Encoder for Semantic Reranking ---
-    cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+    # Do NOT download/initialize on module import:
+    cross_encoder = None
+
+@classmethod
+def get_cross_encoder(cls):
+    """Lazy load the cross encoder only when first needed."""
+    if cls.cross_encoder is None:
+        logger.info("Loading Cross-Encoder model into memory...")
+        cls.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+        logger.info("Cross-Encoder model successfully loaded.")
+    return cls.cross_encoder
 
 class BulkDeleteRequest(BaseModel):
     ids: List[str]
@@ -588,7 +597,8 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                     valid_candidate_indices.append(i)
 
         if candidate_pairs:
-            ce_scores = search_engine.cross_encoder.predict(candidate_pairs)
+            encoder = search_engine.get_cross_encoder()
+            ce_scores = encoder.predict(candidate_pairs)
             best_ce_indices = np.argsort(ce_scores)[::-1]
             
             for idx in best_ce_indices:
