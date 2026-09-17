@@ -46,8 +46,8 @@ export const Dashboard = ({ user }) => {
   };
 
   // Base cards that everyone sees
+// Base cards that everyone sees
   const baseCards = [
-    { id: 'docs', icon: FileText, label: t('recentDocuments'), value: stats.documents, color: 'text-blue-600' },
     { id: 'chat', icon: MessageSquare, label: t('chatSessions'), value: stats.chat_sessions, color: 'text-purple-600' },
     { id: 'laws', icon: BookOpen, label: t('legalArticles'), value: stats.legal_articles, color: 'text-orange-600' },
   ];

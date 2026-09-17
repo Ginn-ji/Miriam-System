@@ -3,18 +3,17 @@ import { useLanguage } from '../contexts/LanguageContext';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Button } from './ui/button';
 import { Textarea } from './ui/textarea';
-import { Send, Bot, Paperclip, BookOpen, ChevronDown } from 'lucide-react';
+import { Send, Bot, BookOpen, ChevronDown } from 'lucide-react';
 import apiClient from '../api/apiClient';
 import { toast } from 'sonner';
 
 export const LawResultCard = ({ lawData }) => {
-  // Helper to dynamically style the badge based on accuracy percentage
   const getBadgeStyle = (accuracyString) => {
     const score = parseInt(accuracyString?.replace('%', '') || '0', 10);
     if (score >= 75) {
-      return "bg-emerald-100 text-emerald-800 border-emerald-200"; // High match (Green)
+      return "bg-emerald-100 text-emerald-800 border-emerald-200"; 
     }
-    return "bg-amber-100 text-amber-800 border-amber-200"; // Moderate match (Amber/Yellow)
+    return "bg-amber-100 text-amber-800 border-amber-200"; 
   };
 
   return (
@@ -26,15 +25,12 @@ export const LawResultCard = ({ lawData }) => {
             {lawData.article ? `${lawData.article}: ${lawData.title}` : lawData.title}
           </h3>
         </div>
-
-        {/* ACCURACY BADGE */}
         {lawData.accuracy && (
           <span className={`px-2.5 py-1 rounded-full text-xs font-bold border shrink-0 ${getBadgeStyle(lawData.accuracy)}`}>
             {lawData.accuracy} Match
           </span>
         )}
       </div>
-
       <div className="p-0">
         {lawData.best_match_chunk && (
           <div className="p-4">
@@ -44,7 +40,6 @@ export const LawResultCard = ({ lawData }) => {
             </div>
           </div>
         )}
-
         <details className="group border-t border-gray-100">
           <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-widest list-none">
             <span>View Full Article</span>
@@ -64,10 +59,8 @@ export const LegalChat = ({ user }) => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [file, setFile] = useState(null);
   const [sessionId, setSessionId] = useState(null);
   const messagesEndRef = useRef(null);
-  const fileInputRef = useRef(null);
 
   useEffect(() => {
     setSessionId(`session_${Date.now()}`);
@@ -78,18 +71,16 @@ export const LegalChat = ({ user }) => {
   }, [messages]);
 
   const handleSend = async () => {
-    if ((!input.trim() && !file) || loading) return;
-    const userMessage = { role: 'user', content: input, fileName: file?.name };
+    if (!input.trim() || loading) return;
+    const userMessage = { role: 'user', content: input };
     setMessages((prev) => [...prev, userMessage]);
     
     const formData = new FormData();
     formData.append("message", input);
     formData.append("session_id", sessionId);
-    if (file) formData.append("file", file);
     if (user && user.role !== 'guest') formData.append("user_id", user.id);
     
     setInput('');
-    setFile(null);
     setLoading(true);
     
     try {
@@ -132,9 +123,6 @@ export const LegalChat = ({ user }) => {
                 ) : (
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 )}
-                
-                {msg.fileName && <p className="text-xs mt-1 opacity-70 italic">📎 Attached: {msg.fileName}</p>}
-                
                 {msg.role === 'assistant' && msg.laws && msg.laws.map((law, i) => (
                   <LawResultCard key={i} lawData={law} />
                 ))}
@@ -146,10 +134,6 @@ export const LegalChat = ({ user }) => {
 
         <div className="border-t p-4 bg-white">
           <div className="flex gap-2 items-center">
-            <input type="file" hidden ref={fileInputRef} onChange={(e) => setFile(e.target.files[0])} />
-            <Button variant="ghost" size="icon" onClick={() => fileInputRef.current.click()}>
-              <Paperclip className="h-5 w-5" />
-            </Button>
             <Textarea 
               value={input} 
               onChange={(e) => setInput(e.target.value)} 
@@ -162,7 +146,7 @@ export const LegalChat = ({ user }) => {
                 }
               }}
             />
-            <Button onClick={handleSend} disabled={loading || (!input.trim() && !file)} className="px-6 h-[60px] shadow-sm">
+            <Button onClick={handleSend} disabled={loading || !input.trim()} className="px-6 h-[60px] shadow-sm">
               <Send className="h-5 w-5" />
             </Button>
           </div>

@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form, BackgroundTasks
+from fastapi import FastAPI, APIRouter, HTTPException, Form, BackgroundTasks
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -11,11 +11,10 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Union, Any
 import uuid
 from datetime import datetime, timezone
-import PyPDF2
-import io
 import Levenshtein
 import numpy as np
 import re
+import math
 
 # NLP and Math libraries
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -23,6 +22,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 from langdetect import detect, DetectorFactory
 from deep_translator import GoogleTranslator
+from sentence_transformers import CrossEncoder
 import bcrypt
 
 # Import the external synonyms dictionary
@@ -61,6 +61,9 @@ class SearchEngine:
     vocab_idf = {}
     bm25 = None
     highest_bm25 = 0.0
+    
+    # --- NEW: Initialize the Cross-Encoder for Semantic Reranking ---
+    cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
 
 class BulkDeleteRequest(BaseModel):
     ids: List[str]
@@ -107,7 +110,6 @@ async def train_search_models():
         category_str = law.get('category', '') or ''
         
         # --- Full corpus: article + title (3x boosted) + category + tags (2x boosted) + body ---
-        # Repeating title/tags gives them higher TF-IDF weight vs body noise
         raw_doc_text = f"{article_str} {title_str} {article_str} {title_str} {category_str} {tags_text} {tags_text} {body}".lower()
         clean_doc_text = re.sub(r'[^\w\s]', '', raw_doc_text)
         corpus.append(clean_doc_text)
@@ -191,17 +193,6 @@ LegalKnowledge.model_rebuild()
 
 # ==================== HELPER FUNCTIONS ====================
 
-async def extract_text_from_pdf(file_content: bytes) -> str:
-    try:
-        pdf_file = io.BytesIO(file_content)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text() or ""
-        return text
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error extracting PDF: {str(e)}")
-
 def detect_language_simple(text: str) -> str:
     try:
         return detect(text[:1000])
@@ -224,9 +215,7 @@ def clean_conversational_noise(text: str) -> str:
     cleaned = text.lower().replace('"', ' ').replace("'", " ")
     for pattern in CONVERSATIONAL_FILLERS:
         cleaned = re.sub(pattern, " ", cleaned)
-    # Expand hyphens into spaces so compound verbs/nouns (e.g. "mag-inspect" -> "mag inspect") separate cleanly
     cleaned = cleaned.replace("-", " ")
-    # Normalize standard Tagalog enclitic ligatures (e.g. "pwedeng" -> "pwede", "maling" -> "mali")
     cleaned = re.sub(r'\b(\w{4,})ng\b', r'\1', cleaned)
     return re.sub(r"\s+", " ", cleaned).strip()
 
@@ -235,21 +224,16 @@ def strip_filipino_affixes(word: str) -> str:
     w = word.lower()
     if len(w) <= 4:
         return w
-    # Infix -in- (e.g. tinanggal -> tanggal, kinakaltas -> kaltas, sinibak -> sibak)
     if len(w) > 4 and w[1:3] == 'in' and w[0] not in 'aeiou':
         w = w[0] + w[3:]
-    # Infix -um- (e.g. pumasok -> pasok)
     if len(w) > 4 and w[1:3] == 'um' and w[0] not in 'aeiou':
         w = w[0] + w[3:]
-    # Prefixes: pinag-, ipag-, pina-, nag-, mag-, pag-
     for pre in ['pinag', 'ipag', 'pina', 'nag', 'mag', 'pag']:
         if w.startswith(pre) and len(w) > len(pre) + 2:
             w = w[len(pre):]
             break
-    # Reduplication (e.g. tatanggal -> tanggal, papasok -> pasok)
     if len(w) >= 6 and w[:2] == w[2:4]:
         w = w[2:]
-    # Suffixes: -han, -hin, -an, -in
     for suf in ['han', 'hin', 'an', 'in']:
         if w.endswith(suf) and len(w) > len(suf) + 3:
             w = w[:-len(suf)]
@@ -324,7 +308,7 @@ async def update_chat_limit(request: ChatLimitRequest):
 
 @api_router.get("/")
 async def root():
-    return {"message": "SHIELD Legal Awareness Chat Bot"}
+    return {"message": "Legal Awareness Chat Bot"}
 
 # ==================== LEGAL KNOWLEDGE CRUD ====================
 
@@ -372,26 +356,6 @@ async def add_legal_knowledge(law: LegalKnowledge, background_tasks: BackgroundT
         
         background_tasks.add_task(train_search_models)
         return {"message": "Law added successfully", "id": law_dict['id']}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
-
-@api_router.post("/legal-knowledge/upload")
-async def upload_legal_knowledge(background_tasks: BackgroundTasks, file: UploadFile = File(...), title: str = Form(...), category: str = Form(...), tags: str = Form(...), language: str = Form(...)):
-    try:
-        content = await file.read()
-        if file.filename.endswith('.pdf'): text_content = await extract_text_from_pdf(content)
-        elif file.filename.endswith('.txt'): text_content = content.decode('utf-8')
-        else: raise HTTPException(status_code=400, detail="Only PDF and text files are supported")
-
-        law = {
-            "id": str(uuid.uuid4()), "title": title, "category": category, "content": text_content,
-            "simplified_text": "Extracted from uploaded document.",
-            "tags": [t.strip() for t in tags.split(',') if t.strip()], "language": language,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }
-        await db.legal_knowledge.insert_one(law)
-        
-        background_tasks.add_task(train_search_models)
-        return {"message": "Legal knowledge uploaded successfully", "id": law["id"]}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/legal-knowledge/bulk-delete")
@@ -451,7 +415,7 @@ async def update_legal_knowledge(law_id: str, law: LegalKnowledge, background_ta
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ==================== HYBRID CHATBOT RETRIEVAL (MEMORY-BASED) ====================
+# ==================== HYBRID CHATBOT RETRIEVAL ====================
 
 @api_router.post("/chat", response_model=ChatResponse)
 async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(None), user_id: Optional[str] = Form(None)):
@@ -476,9 +440,6 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
 
         # =========================================================
         # STEP 0: DIRECT ARTICLE NUMBER LOOKUP
-        # If the query matches "Article N" / "Art. N", find and prepend
-        # that exact article BEFORE any scoring pipeline runs.
-        # This completely bypasses TF-IDF / BM25 / threshold guards.
         # =========================================================
         article_num_match = re.search(r'\barticle\s+(\d+)\b|\bart\.?\s*(\d+)\b', message.lower())
         direct_article_number = None
@@ -491,7 +452,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                     direct_article_index = idx
                     break
 
-        # --- STEP 2: EXPAND PHRASES AND SYNONYMS (Punctuation-free + Affix-aware) ---
+        # --- STEP 2: EXPAND PHRASES AND SYNONYMS ---
         expanded_keywords = []
         clean_text_no_punct = re.sub(r'[^\w\s]', ' ', message_text)
         raw_words = clean_text_no_punct.split()
@@ -515,10 +476,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             if translation:
                 search_text = f"{search_text} {translation}"
 
-        # Combine translated text with the safely extracted synonyms
         full_query_text = f"{search_text} {' '.join(expanded_keywords)}"
-        
-        # Strip punctuation from query for accurate matching
         clean_full_query = re.sub(r'[^\w\s]', '', full_query_text)
 
         # --- STEP 4: TOKENIZATION & STOPWORDS ---
@@ -529,11 +487,10 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             "give", "given", "gave", "take", "took", "get", "got", "make", "made", "know", "knew", "ask", "asked", "tell", "told", "say", "said", "just", "like", "want", "went", "go", "off", "up", "down"
         }
         
-        # Allow short numeric tokens through (e.g. "1", "13") for article number queries
         raw_tokens = [w.lower() for w in clean_full_query.split()
                       if (len(w) > 2 or w.isdigit()) and w.lower() not in stopwords]
 
-        # --- STEP 5: EXACT MATCHES & LEVENSHTEIN FUZZY CORRECTION (Threshold d <= 2) ---
+        # --- STEP 5: EXACT MATCHES & LEVENSHTEIN FUZZY CORRECTION ---
         exact_tokens = [t for t in raw_tokens if t in search_engine.vocabulary]
         corrected_tokens = list(exact_tokens)
         unmatched = [t for t in raw_tokens if t not in search_engine.vocabulary]
@@ -545,7 +502,6 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                 if dist == 1 or (dist == 2 and len(t) >= 6):
                     corrected_tokens.append(closest)
 
-        # Only reject if neither exact nor fuzzy match produced any valid legal tokens
         if not corrected_tokens:
             return ChatResponse(
                 response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.",
@@ -554,30 +510,24 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         
         query_text_for_math = " ".join(corrected_tokens)
         
-        # --- STEP 6: EXPLOIT CACHED MODELS (Instant Speed) ---
+        # --- STEP 6: EXPLOIT CACHED MODELS ---
         query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
         cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
         bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
         
-        # =========================================================
-        # MIN-MAX NORMALIZATION & COMBSUM DATA FUSION
-        # =========================================================
+        # Normalize BM25
         bm25_array = np.array(bm25_scores)
-        
-        # Normalize BM25 to [0, 1] — use zeros (not ones) when all scores are equal
         if len(bm25_array) > 0 and np.max(bm25_array) > 0:
             bm25_min = np.min(bm25_array)
             bm25_max = np.max(bm25_array)
             if bm25_max == bm25_min:
-                bm25_norm = np.zeros_like(bm25_array)   # no signal → no boost
+                bm25_norm = np.zeros_like(bm25_array) 
             else:
                 bm25_norm = (bm25_array - bm25_min) / (bm25_max - bm25_min)
         else:
             bm25_norm = np.zeros_like(bm25_array)
 
-        # --- TITLE BOOST SCORE (IDF-Weighted) ---
-        # Rare, domain-specific words (e.g. "disability", "dismissal", "inspection") give much higher boost
-        # than generic ubiquitous words (e.g. "work", "employment").
+        # Title Boost
         title_boost = np.zeros(len(search_engine.laws))
         query_token_set = set(corrected_tokens)
         vocab_idf = getattr(search_engine, 'vocab_idf', {})
@@ -587,13 +537,11 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             if matching_title_words:
                 title_boost[idx] = sum(vocab_idf.get(w, 1.0) for w in matching_title_words)
 
-        # Normalize title boost to [0, 1]
         tb_max = np.max(title_boost)
         title_boost_norm = title_boost / tb_max if tb_max > 0 else title_boost
 
-        # CombSUM Fusion: 35% TF-IDF + 40% BM25 + 25% Title Boost
+        # CombSUM Fusion
         final_scores = (cosine_scores * 0.35) + (bm25_norm * 0.40) + (title_boost_norm * 0.25)
-        # =========================================================
         
         try:
             limit_setting = await db.settings.find_one({"key": "chat_limit"})
@@ -603,7 +551,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         
         matched_laws = []
         
-        # --- DIRECT ARTICLE PRE-FETCH: inject the exact article as result #1 ---
+        # --- DIRECT ARTICLE PRE-FETCH ---
         if direct_article_index is not None:
             direct_law = search_engine.laws[direct_article_index].copy()
             qs = set(corrected_tokens)
@@ -619,23 +567,45 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             direct_law['accuracy'] = "100%"
             matched_laws.append(direct_law)
 
-        top_indices = np.argsort(final_scores)[::-1]
-        query_match_tokens = set(corrected_tokens)
-
-        for i in top_indices:
-            if len(matched_laws) >= chat_limit:
-                break
-            # Skip the directly-fetched article so it isn't duplicated
+        # =========================================================
+        # CROSS-ENCODER RERANKING
+        # =========================================================
+        top_15_indices = np.argsort(final_scores)[::-1][:15]
+        
+        candidate_pairs = []
+        valid_candidate_indices = []
+        
+        for i in top_15_indices:
+            # Skip the directly-fetched article to prevent duplicates
             if direct_article_index is not None and i == direct_article_index:
                 continue
-            if final_scores[i] > 0.25: 
-                law_data = search_engine.laws[i].copy()
+                
+            # Only rerank documents that passed a basic threshold and contain at least one token
+            if final_scores[i] > 0.15: 
                 doc_words = set(search_engine.corpus[i].split())
-                if not (query_match_tokens & doc_words):
-                    continue
+                if query_token_set & doc_words:
+                    candidate_pairs.append([full_query_text, search_engine.corpus[i]])
+                    valid_candidate_indices.append(i)
+
+        if candidate_pairs:
+            ce_scores = search_engine.cross_encoder.predict(candidate_pairs)
+            best_ce_indices = np.argsort(ce_scores)[::-1]
+            
+            for idx in best_ce_indices:
+                if len(matched_laws) >= chat_limit:
+                    break
                     
-                raw_percentage = int(final_scores[i] * 100)
-                law_data['accuracy'] = f"{raw_percentage}%"
+                original_idx = valid_candidate_indices[idx]
+                law_data = search_engine.laws[original_idx].copy()
+                raw_ce_score = float(ce_scores[idx])
+                
+                # Convert logit score to UI percentage using Sigmoid function
+                ui_percentage = int((1 / (1 + math.exp(-raw_ce_score))) * 100)
+                
+                # Keep the percentage visually tied to the CombSUM floor so it doesn't look abnormally low
+                ui_percentage = max(ui_percentage, int(final_scores[original_idx] * 100))
+                
+                law_data['accuracy'] = f"{ui_percentage}%"
                 
                 qs = set(corrected_tokens)
                 chunks = law_data.get('chunks') or []
@@ -649,8 +619,6 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                     law_data['best_match_chunk'] = law_data.get('simplified_text') or (law_data.get('content', '') or '')[:500]
                 
                 matched_laws.append(law_data)
-
-
             
         if not matched_laws:
             final_response = "I could not find any specific Philippine Labor Law matching your query. Please ensure your question is related to employment, wages, or workplace policies."
@@ -684,36 +652,23 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
 
 @api_router.get("/users")
 async def get_all_users(requester_id: str):
-    """Fetches all users. Only accessible by a super_admin."""
     requester = await db.users.find_one({"id": requester_id})
-    
     if not requester or requester.get("role") != "super_admin":
-        raise HTTPException(status_code=403, detail="Access Denied: Only Super Admins can view the user list.")
-    
-    # Return all users but hide their passwords for security
+        raise HTTPException(status_code=403, detail="Access Denied")
     users = await db.users.find({}, {"_id": 0, "password": 0}).to_list(1000)
     return {"users": users}
 
 @api_router.put("/users/{target_id}/role")
 async def update_user_role(target_id: str, request: RoleUpdateRequest):
-    """Updates a user's role. Only accessible by a super_admin."""
     requester = await db.users.find_one({"id": request.requester_id})
-    
     if not requester or requester.get("role") != "super_admin":
-        raise HTTPException(status_code=403, detail="Access Denied: Only Super Admins can modify user roles.")
-    
+        raise HTTPException(status_code=403, detail="Access Denied")
     if request.new_role not in ["user", "admin", "super_admin"]:
-        raise HTTPException(status_code=400, detail="Invalid role provided.")
-        
-    result = await db.users.update_one(
-        {"id": target_id},
-        {"$set": {"role": request.new_role}}
-    )
-    
+        raise HTTPException(status_code=400, detail="Invalid role")
+    result = await db.users.update_one({"id": target_id}, {"$set": {"role": request.new_role}})
     if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Target user not found.")
-        
-    return {"message": f"User role successfully updated to {request.new_role}"}
+        raise HTTPException(status_code=404, detail="Target user not found")
+    return {"message": f"User role updated to {request.new_role}"}
 
 @api_router.get("/stats")
 async def get_stats():
@@ -724,53 +679,39 @@ async def get_stats():
 # ==================== TEST CASE DATABASE CLOUD ROUTES ====================
 @api_router.get("/admin/metrics/test-cases")
 async def get_test_cases():
-    """Fetches all saved benchmark test cases from the cloud database."""
     cases = await db.test_cases.find({}, {"_id": 0}).to_list(1000)
     return {"test_cases": cases}
 
 @api_router.post("/admin/metrics/test-cases")
 async def add_test_case(test_case: SavedTestCase):
-    """Saves a new test case to the cloud database."""
     case_dict = test_case.model_dump()
-    
-    # Ensure no duplicate test IDs exist
     existing = await db.test_cases.find_one({"test_id": case_dict["test_id"]})
     if existing:
         raise HTTPException(status_code=400, detail="Test ID already exists.")
-        
     await db.test_cases.insert_one(case_dict)
     return {"message": "Test case saved to cloud database."}
 
 @api_router.delete("/admin/metrics/test-cases/{test_id}")
 async def delete_test_case(test_id: str):
-    """Deletes a test case from the cloud database."""
     result = await db.test_cases.delete_one({"test_id": test_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Test case not found.")
     return {"message": "Test case deleted."}
 
-
 @api_router.post("/admin/metrics/evaluate")
 async def evaluate_search_metrics(payload: ManualEvaluationRequest, requester_id: str):
-    """Runs manually-entered test cases against the live search engine and returns
-    precision/recall/F1/MRR metrics. Only accessible by admins and super_admins."""
     requester = await db.users.find_one({"id": requester_id})
-
     if not requester or requester.get("role") not in ["admin", "super_admin"]:
-        raise HTTPException(status_code=403, detail="Access Denied: Only Admins can run metric evaluations.")
-
+        raise HTTPException(status_code=403, detail="Access Denied")
     if not payload.test_cases:
         raise HTTPException(status_code=400, detail="No test cases provided.")
-
     if search_engine.vectorizer is None or search_engine.bm25 is None:
-        raise HTTPException(status_code=400, detail="Search models are not trained yet. Add legal knowledge first.")
-
+        raise HTTPException(status_code=400, detail="Search models not trained.")
     try:
         limit_setting = await db.settings.find_one({"key": "chat_limit"})
         chat_limit = int(limit_setting.get("value", 3)) if limit_setting else 3
     except:
         chat_limit = 3
-
     return calculate_ir_metrics(search_engine, payload.test_cases, k=chat_limit)
 
 @api_router.post("/login")
@@ -809,17 +750,13 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
 
 @app.on_event("startup")
 async def startup_event():
-    # 1. Check if a super_admin exists
     super_admin_exists = await db.users.find_one({"role": "super_admin"})
-    
     if not super_admin_exists:
-        # If no super_admin exists, see if the default admin is there and upgrade it
         admin_user = await db.users.find_one({"username": "admin"})
         if admin_user:
             await db.users.update_one({"_id": admin_user["_id"]}, {"$set": {"role": "super_admin"}})
             logger.info("Upgraded default admin to super_admin.")
         else:
-            # Create a brand new super_admin if the database is completely empty
             await db.users.insert_one({
                 "id": str(uuid.uuid4()), 
                 "username": "superadmin", 
@@ -829,7 +766,6 @@ async def startup_event():
             })
             logger.info("Created new superadmin account.")
     
-    # 2. Trigger in-memory search model training
     await train_search_models()
     logger.info("SHIELD API Started and Models Loaded")
 
