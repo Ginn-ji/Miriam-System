@@ -1,0 +1,66 @@
+[
+  {
+    "_id": "69de3618d7dba9f409aa0107",
+    "id": "37f75198-8719-49f6-b3ec-72a95b941389",
+    "username": "admin",
+    "password": "adminpassword",
+    "role": "super_admin",
+    "created_at": "2026-04-14T12:42:00.342254+00:00"
+  },
+  {
+    "_id": "69de3aab2e288d780d08bd6f",
+    "id": "e22e445c-e595-46f7-88f2-6c460e3c476b",
+    "username": "jp",
+    "password": "popolocrois1",
+    "role": "user",
+    "created_at": "2026-04-14T13:01:31.232707+00:00"
+  },
+  {
+    "_id": "6a463f61c72891d80ec9728a",
+    "id": "ef531e4f-f129-4685-b0b7-3a7653184259",
+    "username": "jap",
+    "password": "popolocrois1",
+    "role": "user",
+    "created_at": "2026-07-02T10:37:21.723319+00:00"
+  },
+  {
+    "_id": "6a464299c72891d80ec9728b",
+    "id": "db062d46-3fd7-42d3-a11e-950436f72cec",
+    "username": "jep",
+    "password": "qwerty123",
+    "role": "super_admin",
+    "created_at": "2026-07-02T10:51:05.825668+00:00"
+  },
+  {
+    "_id": "6a7586a4ee108778cf2df421",
+    "id": "5dea537d-b265-425b-8222-e8d07241993a",
+    "username": "gabby",
+    "password": "gabby123",
+    "role": "user",
+    "created_at": "2026-08-07T07:17:56.590053+00:00"
+  },
+  {
+    "_id": "6a7e5e1336fa2e79f559d6dd",
+    "id": "956bc2b3-6e67-4d6f-a42a-2fb177798f9b",
+    "username": "japat",
+    "password": "12345",
+    "role": "admin",
+    "created_at": "2026-08-14T00:15:15.699131+00:00"
+  },
+  {
+    "_id": "6a7e5f5936fa2e79f559d6de",
+    "id": "522997b9-6379-4324-a033-a4c404c3bbb6",
+    "username": "japats",
+    "password": "12345",
+    "role": "admin",
+    "created_at": "2026-08-14T00:20:41.093562+00:00"
+  },
+  {
+    "_id": "6aac81cb3c3fb74b503ab83e",
+    "id": "171a1562-e86e-4f07-ad20-d7f1c5040df6",
+    "username": "charles",
+    "password": "navalta",
+    "role": "user",
+    "created_at": "2026-09-18T00:11:55.397138+00:00"
+  }
+]
