@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 from fastapi import FastAPI, APIRouter, HTTPException, Form, BackgroundTasks
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -15,7 +15,7 @@ import Levenshtein
 import numpy as np
 import re
 import math
-import asyncio
+
 # NLP and Math libraries
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -65,15 +65,14 @@ class SearchEngine:
     # Do NOT download/initialize on module import:
     cross_encoder = None
 
-    @classmethod
-    def get_cross_encoder(cls):
-        """Lazy load the cross encoder only when first needed."""
-        if cls.cross_encoder is None:
-            logger.info("Loading Cross-Encoder model into memory...")
-            from sentence_transformers import CrossEncoder
-            cls.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
-            logger.info("Cross-Encoder model successfully loaded.")
-        return cls.cross_encoder
+@classmethod
+def get_cross_encoder(cls):
+    """Lazy load the cross encoder only when first needed."""
+    if cls.cross_encoder is None:
+        logger.info("Loading Cross-Encoder model into memory...")
+        cls.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+        logger.info("Cross-Encoder model successfully loaded.")
+    return cls.cross_encoder
 
 class BulkDeleteRequest(BaseModel):
     ids: List[str]
@@ -98,7 +97,7 @@ async def train_search_models():
         search_engine.bm25 = None
         return
 
-    search_engine.laws = all_laws
+    search_engine.laws = None
     corpus = []
     title_corpus = []
     article_numbers = []
@@ -289,42 +288,6 @@ async def get_or_create_translation(text: str) -> str:
         logger.warning(f"Translation module failed: {e}")
     return ""
 
-# ==================== CROSS-ENCODER RELEVANCE THRESHOLD ====================
-# Any reranked candidate with a logit score below this is considered irrelevant.
-# Empirically validated:
-#   - Legitimate labor law queries:  +1.00 to +9.16  (median +7.41)
-#   - Out-of-domain queries:         -5.11 to -11.48
-CROSS_ENCODER_THRESHOLD = 0.0
-
-# ==================== CONVERSATIONAL INTENT DETECTION ====================
-# Patterns that indicate the user is greeting, thanking, or probing the bot's
-# identity rather than asking a genuine labor-law question.
-_GREETING_PATTERNS = re.compile(
-    r"^(hello|hi|hey|good (morning|afternoon|evening|day)|magandang (umaga|tanghali|hapon|gabi|araw)|"
-    r"kumusta|kamusta|musta|howdy|hola|sup|yo|greetings|hi there|hey there)\b",
-    re.IGNORECASE,
-)
-_GRATITUDE_PATTERNS = re.compile(
-    r"^(thank(s| you)|salamat|maraming salamat|ty|thx|cheers|appreciate it|thanks a lot|thank you so much)\b",
-    re.IGNORECASE,
-)
-_BOT_IDENTITY_PATTERNS = re.compile(
-    r"\b(sino ka|who are you|what are you|ano ka|ano ang kaya mo|what can you do|"
-    r"what is your name|ano ang pangalan mo|are you (a |an )?(bot|ai|robot|chatbot))\b",
-    re.IGNORECASE,
-)
-
-def is_conversational_intent(text: str) -> bool:
-    """Returns True when the query is a greeting, gratitude expression, or bot-identity question."""
-    stripped = text.strip()
-    if _GREETING_PATTERNS.match(stripped):
-        return True
-    if _GRATITUDE_PATTERNS.match(stripped):
-        return True
-    if _BOT_IDENTITY_PATTERNS.search(stripped):
-        return True
-    return False
-
 # ==================== SYSTEM SETTINGS ====================
 
 @api_router.get("/settings/chat-limit")
@@ -476,22 +439,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                 laws=[]
             )
         # -----------------------------------------------
-
-        # --- STEP 1a: CONVERSATIONAL INTENT GUARD ---
-        # Detect greetings, gratitude, and bot-identity questions early.
-        # These should never trigger a legal-knowledge search.
-        if is_conversational_intent(message):
-            return ChatResponse(
-                response=(
-                    "Hello! I'm LACBot, your Philippine Labor Law awareness assistant. "
-                    "I can help you understand your rights and obligations under the Labor Code of the Philippines. "
-                    "Try asking me about wages, overtime, termination, leaves, or any other workplace concern!"
-                ),
-                session_id=session_id,
-                laws=[]
-            )
-        # -----------------------------------------------
-
+            
         # --- STEP 1: CONVERSATIONAL NOISE REDUCTION ---
         clean_message = clean_conversational_noise(message)
         message_text = clean_message.lower() if clean_message else message.lower()
@@ -555,17 +503,13 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         exact_tokens = [t for t in raw_tokens if t in search_engine.vocabulary]
         corrected_tokens = list(exact_tokens)
         unmatched = [t for t in raw_tokens if t not in search_engine.vocabulary]
-
-        # GUARD: Only attempt fuzzy correction if at least one exact token already
-        # anchors this query in the labor-law vocabulary. Without this guard,
-        # general words like "cook"â†’"book" or "love"â†’"leave" create false hits.
-        if exact_tokens and search_engine.vocabulary:
-            for t in unmatched:
-                if len(t) >= 4:
-                    closest = min(search_engine.vocabulary, key=lambda v: Levenshtein.distance(t, v))
-                    dist = Levenshtein.distance(t, closest)
-                    if dist == 1 or (dist == 2 and len(t) >= 6):
-                        corrected_tokens.append(closest)
+        
+        for t in unmatched:
+            if len(t) >= 4 and search_engine.vocabulary:
+                closest = min(search_engine.vocabulary, key=lambda v: Levenshtein.distance(t, v))
+                dist = Levenshtein.distance(t, closest)
+                if dist == 1 or (dist == 2 and len(t) >= 6):
+                    corrected_tokens.append(closest)
 
         if not corrected_tokens:
             return ChatResponse(
@@ -660,22 +604,16 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             for idx in best_ce_indices:
                 if len(matched_laws) >= chat_limit:
                     break
-
-                raw_ce_score = float(ce_scores[idx])
-
-                # RELEVANCE GATE: discard candidates that score below the threshold.
-                # Legitimate labor queries score +1 to +9; irrelevant queries -5 to -11.
-                if raw_ce_score < CROSS_ENCODER_THRESHOLD:
-                    continue
                     
                 original_idx = valid_candidate_indices[idx]
                 law_data = search_engine.laws[original_idx].copy()
+                raw_ce_score = float(ce_scores[idx])
                 
-                # Convert logit score to UI percentage using Sigmoid function.
-                # Clamp to a minimum of 50% so that any article that passes the
-                # threshold is always shown as at least "somewhat relevant".
+                # Convert logit score to UI percentage using Sigmoid function
                 ui_percentage = int((1 / (1 + math.exp(-raw_ce_score))) * 100)
-                ui_percentage = max(ui_percentage, 50)
+                
+                # Keep the percentage visually tied to the CombSUM floor so it doesn't look abnormally low
+                ui_percentage = max(ui_percentage, int(final_scores[original_idx] * 100))
                 
                 law_data['accuracy'] = f"{ui_percentage}%"
                 
@@ -784,11 +722,7 @@ async def evaluate_search_metrics(payload: ManualEvaluationRequest, requester_id
         chat_limit = int(limit_setting.get("value", 3)) if limit_setting else 3
     except:
         chat_limit = 3
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(
-        None, calculate_ir_metrics, search_engine, payload.test_cases, chat_limit
-    )
-    return result
+    return calculate_ir_metrics(search_engine, payload.test_cases, k=chat_limit)
 
 @api_router.post("/login")
 async def login(request: LoginRequest):

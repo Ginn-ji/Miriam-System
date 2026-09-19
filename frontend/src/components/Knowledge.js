@@ -303,7 +303,7 @@ export const MetricsEvaluationControl = ({ currentUser }) => {
       const response = await apiClient.post(
         '/admin/metrics/evaluate',
         { test_cases: testCases },
-        { params: { requester_id: currentUser?.id }, timeout: 300000 }
+        { params: { requester_id: currentUser?.id } }
       );
       setResults(response.data);
       toast.success('Evaluation complete');
