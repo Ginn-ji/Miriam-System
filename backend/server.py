@@ -22,6 +22,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 from langdetect import detect, DetectorFactory
 from deep_translator import GoogleTranslator
+from sentence_transformers import CrossEncoder
 import bcrypt
 
 # Import the external synonyms dictionary
