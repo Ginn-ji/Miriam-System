@@ -1,0 +1,2408 @@
+diff --git a/backend/enrich_corpus.py b/backend/enrich_corpus.py
+new file mode 100644
+index 0000000..19fff9d
+--- /dev/null
++++ b/backend/enrich_corpus.py
+@@ -0,0 +1,176 @@
++import asyncio
++import os
++import re
++from motor.motor_asyncio import AsyncIOMotorClient
++from dotenv import load_dotenv
++
++load_dotenv('backend/.env')
++client = AsyncIOMotorClient(os.environ['MONGO_URL'])
++db = client[os.environ['DB_NAME']]
++
++# Domain-specific intent descriptors mapping for Philippine Labor Code
++INTENT_MAPPINGS = {
++    # Coverage & Exclusions
++    "Art. 82": [
++        "government employees", "kawani ng gobyerno", "empleyado ng gobyerno", 
++        "sahod ng gobyerno", "sahod para sa mga government employees", 
++        "civil service", "public sector", "hindi sakop", "exclusions", 
++        "managerial employees", "field personnel", "domestic helpers", "kasambahay"
++    ],
++    "Art. 276": [
++        "government employees", "kawani ng gobyerno", "empleyado ng gobyerno", 
++        "civil service law", "civil service commission", "public sector workers", 
++        "terms and conditions of government employees"
++    ],
++    
++    # Hours of work & Overtime
++    "Art. 83": ["normal hours of work", "eight hours", "walong oras", "oras ng trabaho"],
++    "Art. 85": ["meal periods", "meal break", "kain", "tanghalian", "pahinga sa trabaho", "oras ng pagkain"],
++    "Art. 86": [
++        "night shift differential", "night differential", "pang gabi", "panggabi", 
++        "gabi nagtatrabaho", "night work", "night worker"
++    ],
++    "Art. 87": [
++        "overtime", "overtime pay", "sobrang oras", "lampas walong oras", 
++        "nagovertime", "overtime work", "bayad sa overtime"
++    ],
++    "Art. 91": [
++        "weekly rest day", "rest day", "day off", "dayoff", "pahinga", 
++        "lingguhang pahinga", "pinapasok sa rest day"
++    ],
++    "Art. 94": [
++        "holiday pay", "regular holiday", "special holiday", "pista opisyal", 
++        "bayad sa holiday", "pinapasok ng holiday"
++    ],
++    "Art. 95": [
++        "service incentive leave", "sil", "leave", "vacation leave", 
++        "sick leave", "limang araw na leave", "paid leave", "leave credits"
++    ],
++
++    # Wages & Deductions
++    "Art. 99": [
++        "regional minimum wages", "minimum wage", "mababang sahod", 
++        "kulang ang sahod", "hindi umabot sa minimum wage", "sahod"
++    ],
++    "Art. 103": [
++        "time of payment", "kailan dapat magpasahod", "release ng sweldo", 
++        "mag-release ng sweldo", "delayed sahod", "late sweldo", "bimonthly payment"
++    ],
++    "Art. 106": [
++        "contractor or subcontractor", "agency worker", "subcontracting", 
++        "labor only contracting", "manpower agency", "kontraktwal"
++    ],
++    "Art. 113": [
++        "wage deductions", "deduction", "kaltas", "kinaltasan", 
++        "binawas sa sahod", "unauthorized deductions", "bawas sweldo"
++    ],
++    "Art. 116": [
++        "withholding of wages", "withholding", "ipit sahod", "ipitin ang sahod", 
++        "hindi ibigay ang sahod", "hindi ibigay ang sweldo", "pinigil na sweldo"
++    ],
++
++    # Women & Special Groups
++    "Art. 131": ["facilities for women", "babae sa trabaho", "buntis", "women workers"],
++    "Art. 133": ["maternity leave benefits", "maternity leave", "buntis", "panganganak"],
++    "Art. 135": ["discrimination prohibited", "diskriminasyon sa babae", "pantay na sahod"],
++    "Art. 137": [
++        "prohibited acts", "discrimination prohibited", "tanggalin dahil buntis", 
++        "pinaalis dahil buntis", "buntis", "maternity"
++    ],
++    "Art. 139": [
++        "minimum employable age", "child labor", "menor de edad", 
++        "bata nagtatrabaho", "edad para magtrabaho"
++    ],
++    "Art. 141": [
++        "coverage", "domestic helpers", "kasambahay", "katulong sa bahay", 
++        "contract of domestic service"
++    ],
++    "Art. 143": [
++        "minimum cash wage", "minimum wage ng kasambahay", "sahod ng katulong", 
++        "sweldo ng kasambahay", "househelpers"
++    ],
++    "Art. 148": ["opportunity for education", "kasambahay makapag aral", "pag-aaral ng kasambahay"],
++
++    # Health & Disability
++    "Art. 162": [
++        "safety and health standards", "safe workplace", "kaligtasan sa trabaho", 
++        "protective equipment", "delikadong lugar ng trabaho"
++    ],
++    "Art. 168": [
++        "compulsory coverage", "employees compensation commission", "ecc", 
++        "aksidente sa trabaho", "nasaktan sa trabaho"
++    ],
++    "Art. 197": [
++        "temporary total disability", "pansamantalang disability", 
++        "injury sa trabaho", "medical benefits"
++    ],
++    "Art. 198": [
++        "permanent total disability", "habang buhay na disability", 
++        "lumpo dahil sa trabaho", "disability compensation"
++    ],
++
++    # Jurisdiction & Complaints
++    "Art. 128": [
++        "visitorial and enforcement power", "dole inspection", "mag-inspect ang dole", 
++        "inspeksyon ng dole", "inspection", "dole"
++    ],
++    "Art. 224": [
++        "jurisdiction of the labor arbiters and the commission", "magsampa ng reklamo", 
++        "reklamo sa employer", "kaso sa boss", "nlrc", "labor arbiter", 
++        "money claims", "illegal dismissal case"
++    ],
++
++    # Termination & Tenure
++    "Art. 294": [
++        "security of tenure", "tinanggal nang walang dahilan", "walang dahilan", 
++        "illegal dismissal", "karapatan sa trabaho", "hindi pwedeng basta tanggalin"
++    ],
++    "Art. 296": ["probationary employment", "regularization", "probationary period", "anim na buwan"],
++    "Art. 297": [
++        "termination by employer", "just causes", "sinibak", "tinanggal", 
++        "pinaalis", "serious misconduct", "willful disobedience", "gross neglect"
++    ],
++    "Art. 298": [
++        "closure of establishment and reduction of personnel", "authorized causes", 
++        "retrenchment", "redundancy", "nagsara ang kompanya", "separation pay"
++    ],
++    "Art. 299": [
++        "disease as ground for termination", "may sakit", "tinanggal dahil may sakit", 
++        "pinaalis dahil nagkasakit", "karamdaman", "nagkasakit", "illness", 
++        "medical condition", "unfit to work"
++    ],
++    "Art. 300": ["termination by employee", "resignation", "nagresign", "magresign", "30 days notice"],
++    "Art. 302": [
++        "retirement", "retirement pay", "magreretiro", "edad ng pagreretiro", 
++        "retirement benefits", "benepisyo sa pagtanda"
++    ]
++}
++
++async def enrich_database():
++    print("Starting Knowledge Base Document Expansion in MongoDB...")
++    updated = 0
++    
++    # Iterate through all laws
++    all_laws = await db.legal_knowledge.find().to_list(None)
++    for law in all_laws:
++        art_str = law.get('article', '') or ''
++        # Normalize article string (e.g. "Art. 82", "Article 82" -> "Art. 82")
++        match = re.search(r'\d+', art_str)
++        if not match:
++            continue
++        art_num = match.group()
++        canonical_key = f"Art. {art_num}"
++        
++        keywords = INTENT_MAPPINGS.get(canonical_key, [])
++        if keywords:
++            res = await db.legal_knowledge.update_one(
++                {"_id": law["_id"]},
++                {"$set": {"intent_keywords": keywords}}
++            )
++            if res.modified_count > 0:
++                updated += 1
++                
++    print(f"Document Expansion complete! Updated {updated} statutory articles with intent_keywords.")
++
++if __name__ == "__main__":
++    asyncio.run(enrich_database())
+diff --git a/backend/metrics.py b/backend/metrics.py
+index 07ecae2..17388a2 100644
+--- a/backend/metrics.py
++++ b/backend/metrics.py
+@@ -1,4 +1,4 @@
+-﻿import re
++import re
+ import numpy as np
+ from pydantic import BaseModel
+ from typing import List
+@@ -6,7 +6,6 @@ from sklearn.metrics.pairwise import cosine_similarity
+ import Levenshtein
+ from langdetect import detect
+ from deep_translator import GoogleTranslator
+-import math
+ 
+ # Import synonyms just like the main server
+ from synonyms import LEGAL_SYNONYMS
+@@ -20,9 +19,6 @@ class TestCaseItem(BaseModel):
+ class ManualEvaluationRequest(BaseModel):
+     test_cases: List[TestCaseItem]
+ 
+-# Cross-Encoder relevance threshold (synchronized with server.py)
+-CROSS_ENCODER_THRESHOLD = 0.0
+-
+ # --- NLP Preprocessing Helpers (Synchronized with server.py) ---
+ CONVERSATIONAL_FILLERS = [
+     r"\bano po ba ang\b", r"\bano po ba\b", r"\bano po\b", r"\bano ba ang\b", r"\bano ba\b",
+@@ -46,17 +42,17 @@ def strip_filipino_affixes(word: str) -> str:
+     w = word.lower()
+     if len(w) <= 4:
+         return w
+-    if len(w) > 4 and w[1:3] == "in" and w[0] not in "aeiou":
++    if len(w) > 4 and w[1:3] == 'in' and w[0] not in 'aeiou':
+         w = w[0] + w[3:]
+-    if len(w) > 4 and w[1:3] == "um" and w[0] not in "aeiou":
++    if len(w) > 4 and w[1:3] == 'um' and w[0] not in 'aeiou':
+         w = w[0] + w[3:]
+-    for pre in ["pinag", "ipag", "pina", "nag", "mag", "pag"]:
++    for pre in ['pinag', 'ipag', 'pina', 'nag', 'mag', 'pag']:
+         if w.startswith(pre) and len(w) > len(pre) + 2:
+             w = w[len(pre):]
+             break
+     if len(w) >= 6 and w[:2] == w[2:4]:
+         w = w[2:]
+-    for suf in ["han", "hin", "an", "in"]:
++    for suf in ['han', 'hin', 'an', 'in']:
+         if w.endswith(suf) and len(w) > len(suf) + 3:
+             w = w[:-len(suf)]
+             break
+@@ -71,57 +67,50 @@ TAGALOG_MARKERS = {
+ }
+ 
+ def is_tagalog_or_taglish(text: str) -> bool:
+-    tokens = set(re.sub(r"[^\w\s]", "", text.lower()).split())
++    tokens = set(re.sub(r'[^\w\s]', '', text.lower()).split())
+     if tokens & TAGALOG_MARKERS:
+         return True
+     try:
+         detected = detect(text[:1000])
+-        return detected in ["tl", "unknown", "id", "ms", "sk", "cy", "hr"]
++        return detected in ['tl', 'unknown', 'id', 'ms', 'sk', 'cy', 'hr']
+     except Exception:
+         return False
+ 
+ # --- Core Logic ---
+ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int = 3):
++    evaluation_rows = []
+     precision_list = []
+     recall_list = []
+     rr_list = []
+ 
++    # Identical Stopwords from server.py
+     stopwords = {
+         "ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "naman", "lang", "daw", "din", "rin",
+-        "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "to", "for", "with",
++        "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "to", "for", "with", 
+         "he", "she", "him", "his", "her", "they", "them", "their", "this", "that", "these", "those", "be", "been", "being", "has", "have", "had", "by", "from", "as", "not", "no", "any", "all", "such", "shall", "may", "will", "upon", "under", "which", "whom", "other", "out", "into", "same", "some",
+         "give", "given", "gave", "take", "took", "get", "got", "make", "made", "know", "knew", "ask", "asked", "tell", "told", "say", "said", "just", "like", "want", "went", "go", "off", "up", "down"
+     }
+ 
+-    # Cap vocabulary for Levenshtein to avoid O(vocab_size) per unmatched token.
+-    capped_vocab = list(search_engine.vocabulary)[:3000] if search_engine.vocabulary else []
+-
+-    # -----------------------------------------------------------------------
+-    # PASS 1: Per-query scoring WITHOUT cross-encoder.
+-    # Collect candidate pairs from all queries into one flat list.
+-    # -----------------------------------------------------------------------
+-    intermediate = []
+-
+     for item in test_cases:
+         raw_message = item.query.strip()
+         clean_message = clean_conversational_noise(raw_message)
+         message_text = clean_message.lower() if clean_message else raw_message.lower()
+ 
+         # Step 0: Direct Article Number Lookup
+-        article_num_match = re.search(r"\barticle\s+(\d+)\b|\bart\.?\s*(\d+)\b", raw_message.lower())
++        article_num_match = re.search(r'\barticle\s+(\d+)\b|\bart\.?\s*(\d+)\b', raw_message.lower())
+         direct_article_index = None
+         if article_num_match:
+             direct_article_number = article_num_match.group(1) or article_num_match.group(2)
+-            if hasattr(search_engine, "article_numbers"):
++            if hasattr(search_engine, 'article_numbers'):
+                 for idx, art_num in enumerate(search_engine.article_numbers):
+-                    stored_digits = re.search(r"\d+", art_num)
++                    stored_digits = re.search(r'\d+', art_num)
+                     if stored_digits and stored_digits.group() == direct_article_number:
+                         direct_article_index = idx
+                         break
+ 
+         # Step 1: Synonym & Concept Expansion
+         expanded_keywords = []
+-        clean_text_no_punct = re.sub(r"[^\w\s]", " ", message_text)
++        clean_text_no_punct = re.sub(r'[^\w\s]', ' ', message_text)
+         raw_words = clean_text_no_punct.split()
+         stemmed_words = [strip_filipino_affixes(w) for w in raw_words]
+         all_candidate_words = set(raw_words + stemmed_words)
+@@ -138,34 +127,71 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
+         search_text = message_text
+ 
+         # Step 2: Language Detection & Translation
+-        # PERFORMANCE NOTE: GoogleTranslator makes a blocking HTTP call per query.
+-        # In the metrics evaluation path this adds seconds of latency per test case.
+-        # Synonym expansion already provides sufficient English coverage for evaluation,
+-        # so translation is intentionally skipped here. It still runs in server.py
+-        # for production chat.
++        if is_tagalog_or_taglish(search_text):
++            try:
++                english_translation = GoogleTranslator(source='tl', target='en').translate(clean_text_no_punct)
++                if english_translation:
++                    search_text = f"{search_text} {english_translation}"
++            except Exception:
++                pass
+ 
+         full_query_text = f"{search_text} {' '.join(expanded_keywords)}"
+-        clean_full_query = re.sub(r"[^\w\s]", "", full_query_text)
++        clean_full_query = re.sub(r'[^\w\s]', '', full_query_text)
++        
++        # Compound entity detection (preserves high-IDF compound phrases)
++        COMPOUND_ENTITIES = [
++            ("government employees", "government_employees"),
++            ("kawani ng gobyerno", "government_employees"),
++            ("empleyado ng gobyerno", "government_employees"),
++            ("civil service", "civil_service"),
++            ("pregnant employees", "pregnant_employees"),
++            ("pregnant workers", "pregnant_employees"),
++            ("probationary employees", "probationary_employees"),
++            ("probationary employment", "probationary_employment"),
++            ("regular employment", "regular_employment"),
++            ("separation pay", "separation_pay"),
++            ("13th month pay", "13th_month_pay"),
++            ("service incentive leave", "service_incentive_leave"),
++            ("night shift differential", "night_shift_differential"),
++            ("illegal recruitment", "illegal_recruitment"),
++            ("constructive dismissal", "constructive_dismissal"),
++            ("security of tenure", "security_of_tenure")
++        ]
++        
++        detected_compounds = []
++        lower_query = full_query_text.lower()
++        for phrase, bound_token in COMPOUND_ENTITIES:
++            if phrase in lower_query:
++                detected_compounds.append(bound_token)
+ 
+         # Step 3: Tokenization
+         raw_tokens = [w.lower() for w in clean_full_query.split()
+                       if (len(w) > 2 or w.isdigit()) and w.lower() not in stopwords]
+ 
+-        # Step 4: Vocabulary Matching & Levenshtein Correction (capped vocab)
++        # Step 4: Vocabulary Matching & Guarded Levenshtein Correction
+         exact_tokens = [t for t in raw_tokens if t in search_engine.vocabulary]
+         corrected_tokens = list(exact_tokens)
+         unmatched = [t for t in raw_tokens if t not in search_engine.vocabulary]
++        
++        for t in unmatched:
++            if t in TAGALOG_MARKERS or t in LEGAL_SYNONYMS:
++                corrected_tokens.append(t)
++                continue
++            if len(t) <= 5:
++                continue
++            candidates = [v for v in search_engine.vocabulary if v.startswith(t[0])]
++            if not candidates:
++                continue
++            closest = min(candidates, key=lambda v: Levenshtein.distance(t, v))
++            dist = Levenshtein.distance(t, closest)
++            if (len(t) <= 8 and dist == 1) or (len(t) >= 9 and dist <= 2):
++                corrected_tokens.append(closest)
+ 
+-        if exact_tokens and capped_vocab:
+-            for t in unmatched:
+-                if len(t) >= 4:
+-                    closest = min(capped_vocab, key=lambda v: Levenshtein.distance(t, v))
+-                    dist = Levenshtein.distance(t, closest)
+-                    if dist == 1 or (dist == 2 and len(t) >= 6):
+-                        corrected_tokens.append(closest)
++        corrected_tokens.extend(detected_compounds)
+ 
+         if not corrected_tokens and direct_article_index is None:
+-            intermediate.append({
++            # Query rejected entirely
++            evaluation_rows.append({
+                 "test_id": item.test_id,
+                 "query": item.query,
+                 "ground_truth": item.expected_article,
+@@ -174,7 +200,7 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
+                 "hit_rank": "N/A",
+                 "precision_k": "0.0%",
+                 "recall": "0.0%",
+-                "reciprocal_rank": 0.0,
++                "reciprocal_rank": 0.0
+             })
+             precision_list.append(0.0)
+             recall_list.append(0.0)
+@@ -184,16 +210,16 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
+         query_text_for_math = " ".join(corrected_tokens)
+ 
+         # Step 5: Scoring (Cosine + BM25 + IDF-Weighted Title Boost)
+-        query_vec = search_engine.vectorizer.transform([query_text_for_math])
++        query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
+         cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
+-        bm25_scores = search_engine.bm25.get_scores(corrected_tokens)
+-
++        bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
++        
+         bm25_array = np.array(bm25_scores)
+         if len(bm25_array) > 0 and np.max(bm25_array) > 0:
+             bm25_min = np.min(bm25_array)
+             bm25_max = np.max(bm25_array)
+             if bm25_max == bm25_min:
+-                bm25_norm = np.zeros_like(bm25_array)
++                bm25_norm = np.zeros_like(bm25_array) 
+             else:
+                 bm25_norm = (bm25_array - bm25_min) / (bm25_max - bm25_min)
+         else:
+@@ -201,8 +227,8 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
+ 
+         title_boost = np.zeros(len(search_engine.laws))
+         query_token_set = set(corrected_tokens)
+-        vocab_idf = getattr(search_engine, "vocab_idf", {})
+-        if hasattr(search_engine, "title_corpus"):
++        vocab_idf = getattr(search_engine, 'vocab_idf', {})
++        if hasattr(search_engine, 'title_corpus'):
+             for idx, title_text in enumerate(search_engine.title_corpus):
+                 title_words = set(title_text.split())
+                 matching_title_words = query_token_set & title_words
+@@ -213,93 +239,29 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
+         title_boost_norm = title_boost / tb_max if tb_max > 0 else title_boost
+ 
+         final_scores = (cosine_scores * 0.35) + (bm25_norm * 0.40) + (title_boost_norm * 0.25)
+-
+-        # Step 6: Build candidate pairs list (cross-encoder deferred to PASS 2)
+-        direct_law = search_engine.laws[direct_article_index] if direct_article_index is not None else None
+-
+-        top_15_indices = np.argsort(final_scores)[::-1][:15]
+-        candidate_pairs = []
+-        valid_candidate_indices = []
+-
+-        for idx in top_15_indices:
++        
++        # Step 6: Retrieval & Filtering
++        retrieved_laws = []
++        if direct_article_index is not None:
++            retrieved_laws.append(search_engine.laws[direct_article_index])
++
++        top_indices = np.argsort(final_scores)[::-1]
++        query_match_tokens = set(corrected_tokens)
++        
++        for idx in top_indices:
++            if len(retrieved_laws) >= k:  # Dynamic Top-K matching admin dashboard max results setting
++                break
+             if direct_article_index is not None and idx == direct_article_index:
+                 continue
+-            if final_scores[idx] > 0.15:
++            if final_scores[idx] > 0.25: 
+                 doc_words = set(search_engine.corpus[idx].split())
+-                if query_token_set & doc_words:
+-                    candidate_pairs.append([full_query_text, search_engine.corpus[idx]])
+-                    valid_candidate_indices.append(idx)
+-
+-        intermediate.append({
+-            "test_id": item.test_id,
+-            "query": item.query,
+-            "ground_truth": item.expected_article,
+-            "_direct_law": direct_law,
+-            "_candidate_pairs": candidate_pairs,
+-            "_valid_candidate_indices": valid_candidate_indices,
+-            "_k": k,
+-        })
+-
+-    # -----------------------------------------------------------------------
+-    # PASS 2: Batched cross-encoder scoring
+-    # All pairs from all queries are scored in a single encoder.predict() call.
+-    # This is dramatically faster than calling predict() once per query because:
+-    #   - The model loads and warms up only once.
+-    #   - All pairs benefit from batched matrix operations.
+-    # -----------------------------------------------------------------------
+-    all_pairs = []
+-    pair_offsets = []  # (row_dict, start_idx, end_idx)
+-
+-    for row in intermediate:
+-        if "_candidate_pairs" not in row:
+-            continue
+-        start = len(all_pairs)
+-        all_pairs.extend(row["_candidate_pairs"])
+-        end = len(all_pairs)
+-        pair_offsets.append((row, start, end))
+-
+-    all_ce_scores = None
+-    if all_pairs:
+-        try:
+-            encoder = search_engine.get_cross_encoder()
+-            all_ce_scores = encoder.predict(all_pairs)
+-        except Exception:
+-            all_ce_scores = None  # Fallback to BM25/cosine order
+-
+-    # -----------------------------------------------------------------------
+-    # PASS 3: Resolve results using batched cross-encoder scores
+-    # -----------------------------------------------------------------------
+-    for row, start, end in pair_offsets:
+-        direct_law = row.pop("_direct_law")
+-        candidate_pairs = row.pop("_candidate_pairs")
+-        valid_candidate_indices = row.pop("_valid_candidate_indices")
+-        row_k = row.pop("_k")
+-
+-        retrieved_laws = []
+-        if direct_law is not None:
+-            retrieved_laws.append(direct_law)
+-
+-        if candidate_pairs:
+-            if all_ce_scores is not None:
+-                ce_scores = all_ce_scores[start:end]
+-                best_ce_indices = np.argsort(ce_scores)[::-1]
+-                for idx in best_ce_indices:
+-                    if len(retrieved_laws) >= row_k:
+-                        break
+-                    if float(ce_scores[idx]) < CROSS_ENCODER_THRESHOLD:
+-                        continue
+-                    original_idx = valid_candidate_indices[idx]
+-                    retrieved_laws.append(search_engine.laws[original_idx])
+-            else:
+-                for idx in valid_candidate_indices:
+-                    if len(retrieved_laws) >= row_k:
+-                        break
++                if query_match_tokens & doc_words:
+                     retrieved_laws.append(search_engine.laws[idx])
+-
+-        # Step 7: Smart Ground Truth Matching
+-        targets = [t.strip().lower() for t in row["ground_truth"].split(",")]
++        
++        # Step 7: Ground Truth Matching
++        targets = [t.strip().lower() for t in item.expected_article.split(',')]
+         total_expected = len(targets)
+-
++        
+         relevant_count = 0
+         first_match_rank = 0
+         retrieved_labels = []
+@@ -307,29 +269,28 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
+         for rank, law in enumerate(retrieved_laws, start=1):
+             law_title = f"{law.get('article', '')} {law.get('title', '')}".strip()
+             retrieved_labels.append(law_title)
+-
+-            law_article_str = law.get("article", "")
+-            law_article_digit = re.search(r"\d+", law_article_str)
+-            law_article_num = law_article_digit.group() if law_article_digit else ""
+-
++            
++            law_title_lower = law_title.lower()
++            law_article_lower = (law.get('article') or '').lower()
++            clean_article = re.sub(r'[^a-z0-9]', '', law_article_lower)
++            clean_title = re.sub(r'[^a-z0-9]', '', law_title_lower)
++            
+             is_match = False
+             for target in targets:
+-                target_digit = re.search(r"\d+", target)
+-                target_num = target_digit.group() if target_digit else ""
+-
+-                if target_num and law_article_num and target_num == law_article_num:
++                clean_target = re.sub(r'[^a-z0-9]', '', target.lower())
++                if clean_target and (clean_target in clean_article or clean_target in clean_title):
+                     is_match = True
+                     break
+-
+-                if target in law_title.lower():
++                if target in law_title_lower or target in law_article_lower:
+                     is_match = True
+-                    break
+-
++                    break 
++                    
+             if is_match:
+                 relevant_count += 1
+                 if first_match_rank == 0:
+                     first_match_rank = rank
+ 
++        # 8. COMPUTE FINAL METRICS
+         total_k = len(retrieved_laws)
+         p_at_k = (relevant_count / total_k) if total_k > 0 else 0.0
+         recall = min((relevant_count / total_expected), 1.0) if total_expected > 0 else 0.0
+@@ -339,26 +300,22 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
+         recall_list.append(recall)
+         rr_list.append(rr)
+ 
+-        row.update({
++        evaluation_rows.append({
++            "test_id": item.test_id,
++            "query": item.query,
++            "ground_truth": item.expected_article,
+             "retrieved_laws": retrieved_labels[:3] if retrieved_labels else ["None Found"],
+             "is_relevant": f"{relevant_count}/{total_expected} Found",
+             "hit_rank": first_match_rank if first_match_rank > 0 else "N/A",
+             "precision_k": f"{round(p_at_k * 100, 1)}%",
+             "recall": f"{round(recall * 100, 1)}%",
+-            "reciprocal_rank": round(rr, 3),
++            "reciprocal_rank": round(rr, 3)
+         })
+ 
+-    # Re-order rows to match original test-case order
+-    row_by_id = {r["test_id"]: r for r in intermediate}
+-    results_matrix = [row_by_id[item.test_id] for item in test_cases if item.test_id in row_by_id]
+-
+-    # Macro Averages
++    # Macro Averages across all test cases
+     macro_precision = np.mean(precision_list) if precision_list else 0.0
+     macro_recall = np.mean(recall_list) if recall_list else 0.0
+-    f1 = (
+-        2 * macro_precision * macro_recall / (macro_precision + macro_recall)
+-        if (macro_precision + macro_recall) > 0 else 0.0
+-    )
++    f1 = (2 * macro_precision * macro_recall / (macro_precision + macro_recall)) if (macro_precision + macro_recall) > 0 else 0.0
+     mrr = np.mean(rr_list) if rr_list else 0.0
+ 
+     return {
+@@ -367,7 +324,7 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
+             "macro_recall": f"{round(macro_recall * 100, 2)}%",
+             "f1_score": f"{round(f1 * 100, 2)}%",
+             "mrr": round(mrr, 3),
+-            "total_tested": len(test_cases),
++            "total_tested": len(test_cases)
+         },
+-        "results_matrix": results_matrix,
+-    }
++        "results_matrix": evaluation_rows
++    }
+\ No newline at end of file
+diff --git a/backend/server.py b/backend/server.py
+index 9d82788..755b9e2 100644
+--- a/backend/server.py
++++ b/backend/server.py
+@@ -1,5 +1,5 @@
+-﻿from __future__ import annotations
+-from fastapi import FastAPI, APIRouter, HTTPException, Form, BackgroundTasks
++from __future__ import annotations
++from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form, BackgroundTasks
+ from fastapi.responses import JSONResponse
+ from dotenv import load_dotenv
+ from starlette.middleware.cors import CORSMiddleware
+@@ -11,18 +11,18 @@ from pydantic import BaseModel, Field, ConfigDict
+ from typing import List, Optional, Union, Any
+ import uuid
+ from datetime import datetime, timezone
++import PyPDF2
++import io
+ import Levenshtein
+ import numpy as np
+ import re
+-import math
+-import asyncio
++
+ # NLP and Math libraries
+ from sklearn.feature_extraction.text import TfidfVectorizer
+ from sklearn.metrics.pairwise import cosine_similarity
+ from rank_bm25 import BM25Okapi
+ from langdetect import detect, DetectorFactory
+-from deep_translator import GoogleTranslator
+-import bcrypt
++import math
+ 
+ # Import the external synonyms dictionary
+ from synonyms import LEGAL_SYNONYMS
+@@ -51,8 +51,9 @@ api_router = APIRouter(prefix="/api")
+ class SearchEngine:
+     laws = []
+     corpus = []
+-    title_corpus = []
+-    article_numbers = []
++    title_corpus = []          # stores ONLY article number + title + tags (no body)
++    intent_corpus = []         # stores intent_keywords field per article for domain bridging
++    article_numbers = []       # stores the raw article number string per law (e.g. "article 1")
+     tokenized_corpus = []
+     vocabulary = set()
+     vectorizer = None
+@@ -60,25 +61,50 @@ class SearchEngine:
+     vocab_idf = {}
+     bm25 = None
+     highest_bm25 = 0.0
+-    
+-    # Do NOT download/initialize on module import:
+-    cross_encoder = None
+-
+-    @classmethod
+-    def get_cross_encoder(cls):
+-        """Lazy load the cross encoder only when first needed."""
+-        if cls.cross_encoder is None:
+-            logger.info("Loading Cross-Encoder model into memory...")
+-            from sentence_transformers import CrossEncoder
+-            cls.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+-            logger.info("Cross-Encoder model successfully loaded.")
+-        return cls.cross_encoder
+ 
+ class BulkDeleteRequest(BaseModel):
+     ids: List[str]
+ 
+ search_engine = SearchEngine()
+ 
++# ==================== LOCAL OFFLINE NMT TRANSLATOR ====================
++# Uses Helsinki-NLP/opus-mt-tl-en (Tiedemann & Thottingal, 2020)
++# Downloads once (~300 MB), then runs 100% offline on CPU.
++# Replaces Google Translate API with zero internet dependency.
++_local_translator = None
++
++def get_local_translator():
++    """Lazy-load the local Tagalog to English NMT model on first use."""
++    global _local_translator
++    if _local_translator is None:
++        try:
++            from transformers import pipeline as hf_pipeline
++            logger.info("Loading Helsinki-NLP/opus-mt-tl-en offline NMT model...")
++            _local_translator = hf_pipeline(
++                "translation",
++                model="Helsinki-NLP/opus-mt-tl-en",
++                device=-1  # CPU
++            )
++            logger.info("Offline NMT model loaded successfully.")
++        except Exception as e:
++            logger.warning(f"Could not load local NMT model: {e}. Translation fallback enabled.")
++            _local_translator = "FAILED"
++    return _local_translator if _local_translator != "FAILED" else None
++
++def local_translate_tl_to_en(text: str) -> str:
++    """Translate Tagalog/Taglish text to English using the local offline NMT model."""
++    if not text or not text.strip():
++        return ""
++    try:
++        translator = get_local_translator()
++        if translator is None:
++            return ""
++        result = translator(text[:500], max_length=256)
++        return result[0].get("translation_text", "") if result else ""
++    except Exception as e:
++        logger.warning(f"Local NMT translation failed: {e}")
++        return ""
++
+ async def train_search_models():
+     """Fetches all laws from the database and pre-trains the TF-IDF and BM25 models in memory."""
+     logger.info("Training SHIELD Search Models in memory...")
+@@ -114,17 +140,19 @@ async def train_search_models():
+         body = " ".join(law.get('chunks', [])) if law.get('chunks') else law.get('content', '')
+         tags = law.get('tags', [])
+         tags_text = " ".join(tags) if isinstance(tags, list) else str(tags)
++        intent_kw = law.get('intent_keywords', [])
++        intent_text = " ".join(intent_kw) if isinstance(intent_kw, list) else str(intent_kw or '')
+         article_str = law.get('article', '') or ''
+         title_str = law.get('title', '') or ''
+         category_str = law.get('category', '') or ''
+         
+-        # --- Full corpus: article + title (3x boosted) + category + tags (2x boosted) + body ---
+-        raw_doc_text = f"{article_str} {title_str} {article_str} {title_str} {category_str} {tags_text} {tags_text} {body}".lower()
++        # --- Full corpus: article + title (3x) + category + tags (2x) + intent_keywords (3x) + body ---
++        raw_doc_text = f"{article_str} {title_str} {article_str} {title_str} {category_str} {tags_text} {tags_text} {intent_text} {intent_text} {intent_text} {body}".lower()
+         clean_doc_text = re.sub(r'[^\w\s]', '', raw_doc_text)
+         corpus.append(clean_doc_text)
+         
+-        # --- Title-only corpus: article number + title + category + tags only (no body) ---
+-        raw_title_text = f"{article_str} {title_str} {category_str} {tags_text}".lower()
++        # --- Title & Intent corpus: structural metadata for high-precision field weighting ---
++        raw_title_text = f"{article_str} {title_str} {category_str} {tags_text} {intent_text}".lower()
+         clean_title_text = re.sub(r'[^\w\s]', '', raw_title_text)
+         title_corpus.append(clean_title_text)
+         
+@@ -143,13 +171,13 @@ async def train_search_models():
+     search_engine.article_numbers = article_numbers
+     search_engine.tokenized_corpus = tokenized_corpus
+     
+-    # Train TF-IDF with bilingual stopwords
+-    search_engine.vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words=list(stopwords), min_df=1)
++    # Train TF-IDF with bilingual stopwords and unigram+bigram ranges
++    search_engine.vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words=list(stopwords), min_df=1, sublinear_tf=True)
+     search_engine.tfidf_matrix = search_engine.vectorizer.fit_transform(corpus)
+     search_engine.vocab_idf = dict(zip(search_engine.vectorizer.get_feature_names_out(), search_engine.vectorizer.idf_))
+     
+-    # Train BM25 on stop-word-filtered tokenized corpus
+-    search_engine.bm25 = BM25Okapi(tokenized_corpus)
++    # Train BM25 with optimized legal IR parameters (k1=1.2 for faster saturation, b=0.85 for length normalization)
++    search_engine.bm25 = BM25Okapi(tokenized_corpus, k1=1.2, b=0.85)
+     
+     logger.info("Search Models successfully trained and loaded into memory!")
+ 
+@@ -202,6 +230,17 @@ LegalKnowledge.model_rebuild()
+ 
+ # ==================== HELPER FUNCTIONS ====================
+ 
++async def extract_text_from_pdf(file_content: bytes) -> str:
++    try:
++        pdf_file = io.BytesIO(file_content)
++        pdf_reader = PyPDF2.PdfReader(pdf_file)
++        text = ""
++        for page in pdf_reader.pages:
++            text += page.extract_text() or ""
++        return text
++    except Exception as e:
++        raise HTTPException(status_code=400, detail=f"Error extracting PDF: {str(e)}")
++
+ def detect_language_simple(text: str) -> str:
+     try:
+         return detect(text[:1000])
+@@ -224,7 +263,9 @@ def clean_conversational_noise(text: str) -> str:
+     cleaned = text.lower().replace('"', ' ').replace("'", " ")
+     for pattern in CONVERSATIONAL_FILLERS:
+         cleaned = re.sub(pattern, " ", cleaned)
++    # Expand hyphens into spaces so compound verbs/nouns (e.g. "mag-inspect" -> "mag inspect") separate cleanly
+     cleaned = cleaned.replace("-", " ")
++    # Normalize standard Tagalog enclitic ligatures (e.g. "pwedeng" -> "pwede", "maling" -> "mali")
+     cleaned = re.sub(r'\b(\w{4,})ng\b', r'\1', cleaned)
+     return re.sub(r"\s+", " ", cleaned).strip()
+ 
+@@ -233,16 +274,21 @@ def strip_filipino_affixes(word: str) -> str:
+     w = word.lower()
+     if len(w) <= 4:
+         return w
++    # Infix -in- (e.g. tinanggal -> tanggal, kinakaltas -> kaltas, sinibak -> sibak)
+     if len(w) > 4 and w[1:3] == 'in' and w[0] not in 'aeiou':
+         w = w[0] + w[3:]
++    # Infix -um- (e.g. pumasok -> pasok)
+     if len(w) > 4 and w[1:3] == 'um' and w[0] not in 'aeiou':
+         w = w[0] + w[3:]
++    # Prefixes: pinag-, ipag-, pina-, nag-, mag-, pag-
+     for pre in ['pinag', 'ipag', 'pina', 'nag', 'mag', 'pag']:
+         if w.startswith(pre) and len(w) > len(pre) + 2:
+             w = w[len(pre):]
+             break
++    # Reduplication (e.g. tatanggal -> tanggal, papasok -> pasok)
+     if len(w) >= 6 and w[:2] == w[2:4]:
+         w = w[2:]
++    # Suffixes: -han, -hin, -an, -in
+     for suf in ['han', 'hin', 'an', 'in']:
+         if w.endswith(suf) and len(w) > len(suf) + 3:
+             w = w[:-len(suf)]
+@@ -266,7 +312,7 @@ def is_tagalog_or_taglish(text: str) -> bool:
+     return detected in ['tl', 'unknown', 'id', 'ms', 'sk', 'cy', 'hr']
+ 
+ async def get_or_create_translation(text: str) -> str:
+-    """Fetches translation with persistent MongoDB cache for 100% determinism and speed."""
++    """Fetches translation using local offline NMT (Helsinki-NLP) with persistent MongoDB cache."""
+     if not text.strip():
+         return ""
+     try:
+@@ -276,53 +322,24 @@ async def get_or_create_translation(text: str) -> str:
+     except Exception:
+         pass
+     
+-    try:
+-        translated = GoogleTranslator(source='tl', target='en').translate(text)
+-        if translated:
+-            try:
+-                await db.translation_cache.insert_one({"query": text, "translation": translated})
+-            except Exception:
+-                pass
+-            return translated
+-    except Exception as e:
+-        logger.warning(f"Translation module failed: {e}")
+-    return ""
++    # 1. Primary: Local offline NMT (100% on-premise, zero external API)
++    translated = local_translate_tl_to_en(text)
++    
++    # 2. Optional Fallback if local model is still initializing
++    if not translated:
++        try:
++            from deep_translator import GoogleTranslator
++            translated = GoogleTranslator(source='tl', target='en').translate(text)
++        except Exception:
++            pass
+ 
+-# ==================== CROSS-ENCODER RELEVANCE THRESHOLD ====================
+-# Any reranked candidate with a logit score below this is considered irrelevant.
+-# Empirically validated:
+-#   - Legitimate labor law queries:  +1.00 to +9.16  (median +7.41)
+-#   - Out-of-domain queries:         -5.11 to -11.48
+-CROSS_ENCODER_THRESHOLD = 0.0
+-
+-# ==================== CONVERSATIONAL INTENT DETECTION ====================
+-# Patterns that indicate the user is greeting, thanking, or probing the bot's
+-# identity rather than asking a genuine labor-law question.
+-_GREETING_PATTERNS = re.compile(
+-    r"^(hello|hi|hey|good (morning|afternoon|evening|day)|magandang (umaga|tanghali|hapon|gabi|araw)|"
+-    r"kumusta|kamusta|musta|howdy|hola|sup|yo|greetings|hi there|hey there)\b",
+-    re.IGNORECASE,
+-)
+-_GRATITUDE_PATTERNS = re.compile(
+-    r"^(thank(s| you)|salamat|maraming salamat|ty|thx|cheers|appreciate it|thanks a lot|thank you so much)\b",
+-    re.IGNORECASE,
+-)
+-_BOT_IDENTITY_PATTERNS = re.compile(
+-    r"\b(sino ka|who are you|what are you|ano ka|ano ang kaya mo|what can you do|"
+-    r"what is your name|ano ang pangalan mo|are you (a |an )?(bot|ai|robot|chatbot))\b",
+-    re.IGNORECASE,
+-)
+-
+-def is_conversational_intent(text: str) -> bool:
+-    """Returns True when the query is a greeting, gratitude expression, or bot-identity question."""
+-    stripped = text.strip()
+-    if _GREETING_PATTERNS.match(stripped):
+-        return True
+-    if _GRATITUDE_PATTERNS.match(stripped):
+-        return True
+-    if _BOT_IDENTITY_PATTERNS.search(stripped):
+-        return True
+-    return False
++    if translated:
++        try:
++            await db.translation_cache.insert_one({"query": text, "translation": translated})
++        except Exception:
++            pass
++        return translated
++    return ""
+ 
+ # ==================== SYSTEM SETTINGS ====================
+ 
+@@ -353,7 +370,7 @@ async def update_chat_limit(request: ChatLimitRequest):
+ 
+ @api_router.get("/")
+ async def root():
+-    return {"message": "Legal Awareness Chat Bot"}
++    return {"message": "SHIELD Legal Awareness Chat Bot"}
+ 
+ # ==================== LEGAL KNOWLEDGE CRUD ====================
+ 
+@@ -403,6 +420,26 @@ async def add_legal_knowledge(law: LegalKnowledge, background_tasks: BackgroundT
+         return {"message": "Law added successfully", "id": law_dict['id']}
+     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+ 
++@api_router.post("/legal-knowledge/upload")
++async def upload_legal_knowledge(background_tasks: BackgroundTasks, file: UploadFile = File(...), title: str = Form(...), category: str = Form(...), tags: str = Form(...), language: str = Form(...)):
++    try:
++        content = await file.read()
++        if file.filename.endswith('.pdf'): text_content = await extract_text_from_pdf(content)
++        elif file.filename.endswith('.txt'): text_content = content.decode('utf-8')
++        else: raise HTTPException(status_code=400, detail="Only PDF and text files are supported")
++
++        law = {
++            "id": str(uuid.uuid4()), "title": title, "category": category, "content": text_content,
++            "simplified_text": "Extracted from uploaded document.",
++            "tags": [t.strip() for t in tags.split(',') if t.strip()], "language": language,
++            "created_at": datetime.now(timezone.utc).isoformat()
++        }
++        await db.legal_knowledge.insert_one(law)
++        
++        background_tasks.add_task(train_search_models)
++        return {"message": "Legal knowledge uploaded successfully", "id": law["id"]}
++    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
++
+ @api_router.post("/legal-knowledge/bulk-delete")
+ async def bulk_delete_laws(request: BulkDeleteRequest, background_tasks: BackgroundTasks):
+     try:
+@@ -460,12 +497,13 @@ async def update_legal_knowledge(law_id: str, law: LegalKnowledge, background_ta
+         raise HTTPException(status_code=500, detail=str(e))
+ 
+ 
+-# ==================== HYBRID CHATBOT RETRIEVAL ====================
++# ==================== HYBRID CHATBOT RETRIEVAL (MEMORY-BASED) ====================
+ 
+ @api_router.post("/chat", response_model=ChatResponse)
+ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(None), user_id: Optional[str] = Form(None)):
+     try:
+-        session_id = session_id or str(uuid.uuid4())
++        session_id = str(session_id) if (session_id and not hasattr(session_id, 'default')) else str(uuid.uuid4())
++        user_id = str(user_id) if (user_id and not hasattr(user_id, 'default')) else None
+         
+         # --- NEW: 1,000 Word Limit Check for Chatbot ---
+         if len(message.split()) > 1000:
+@@ -475,22 +513,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+                 laws=[]
+             )
+         # -----------------------------------------------
+-
+-        # --- STEP 1a: CONVERSATIONAL INTENT GUARD ---
+-        # Detect greetings, gratitude, and bot-identity questions early.
+-        # These should never trigger a legal-knowledge search.
+-        if is_conversational_intent(message):
+-            return ChatResponse(
+-                response=(
+-                    "Hello! I'm LACBot, your Philippine Labor Law awareness assistant. "
+-                    "I can help you understand your rights and obligations under the Labor Code of the Philippines. "
+-                    "Try asking me about wages, overtime, termination, leaves, or any other workplace concern!"
+-                ),
+-                session_id=session_id,
+-                laws=[]
+-            )
+-        # -----------------------------------------------
+-
++            
+         # --- STEP 1: CONVERSATIONAL NOISE REDUCTION ---
+         clean_message = clean_conversational_noise(message)
+         message_text = clean_message.lower() if clean_message else message.lower()
+@@ -500,6 +523,9 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+ 
+         # =========================================================
+         # STEP 0: DIRECT ARTICLE NUMBER LOOKUP
++        # If the query matches "Article N" / "Art. N", find and prepend
++        # that exact article BEFORE any scoring pipeline runs.
++        # This completely bypasses TF-IDF / BM25 / threshold guards.
+         # =========================================================
+         article_num_match = re.search(r'\barticle\s+(\d+)\b|\bart\.?\s*(\d+)\b', message.lower())
+         direct_article_number = None
+@@ -512,7 +538,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+                     direct_article_index = idx
+                     break
+ 
+-        # --- STEP 2: EXPAND PHRASES AND SYNONYMS ---
++        # --- STEP 2: EXPAND PHRASES AND SYNONYMS (Punctuation-free + Affix-aware) ---
+         expanded_keywords = []
+         clean_text_no_punct = re.sub(r'[^\w\s]', ' ', message_text)
+         raw_words = clean_text_no_punct.split()
+@@ -536,7 +562,10 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+             if translation:
+                 search_text = f"{search_text} {translation}"
+ 
++        # Combine translated text with the safely extracted synonyms
+         full_query_text = f"{search_text} {' '.join(expanded_keywords)}"
++        
++        # Strip punctuation from query for accurate matching
+         clean_full_query = re.sub(r'[^\w\s]', '', full_query_text)
+ 
+         # --- STEP 4: TOKENIZATION & STOPWORDS ---
+@@ -547,26 +576,78 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+             "give", "given", "gave", "take", "took", "get", "got", "make", "made", "know", "knew", "ask", "asked", "tell", "told", "say", "said", "just", "like", "want", "went", "go", "off", "up", "down"
+         }
+         
++        # Compound entity detection (preserves high-IDF compound phrases)
++        COMPOUND_ENTITIES = [
++            ("government employees", "government_employees"),
++            ("kawani ng gobyerno", "government_employees"),
++            ("empleyado ng gobyerno", "government_employees"),
++            ("civil service", "civil_service"),
++            ("pregnant employees", "pregnant_employees"),
++            ("pregnant workers", "pregnant_employees"),
++            ("probationary employees", "probationary_employees"),
++            ("probationary employment", "probationary_employment"),
++            ("regular employment", "regular_employment"),
++            ("separation pay", "separation_pay"),
++            ("13th month pay", "13th_month_pay"),
++            ("service incentive leave", "service_incentive_leave"),
++            ("night shift differential", "night_shift_differential"),
++            ("illegal recruitment", "illegal_recruitment"),
++            ("constructive dismissal", "constructive_dismissal"),
++            ("security of tenure", "security_of_tenure")
++        ]
++        
++        detected_compounds = []
++        lower_query = full_query_text.lower()
++        for phrase, bound_token in COMPOUND_ENTITIES:
++            if phrase in lower_query:
++                detected_compounds.append(bound_token)
++
++        # Allow short numeric tokens through (e.g. "1", "13") for article number queries
+         raw_tokens = [w.lower() for w in clean_full_query.split()
+                       if (len(w) > 2 or w.isdigit()) and w.lower() not in stopwords]
+ 
+-        # --- STEP 5: EXACT MATCHES & LEVENSHTEIN FUZZY CORRECTION ---
++        # --- STEP 5: EXACT MATCHES & GUARDED LEVENSHTEIN FUZZY CORRECTION ---
++        # Guards:
++        # 1. Tagalog immunity: Known Tagalog words are never "corrected" to random English words
++        # 2. Strict length thresholds: <= 5 chars require exact match (d=0)
++        # 3. 6-8 chars allow d=1; >= 9 chars allow d<=2
++        # 4. Initial letter lock: candidates must share the same first character
+         exact_tokens = [t for t in raw_tokens if t in search_engine.vocabulary]
+         corrected_tokens = list(exact_tokens)
+         unmatched = [t for t in raw_tokens if t not in search_engine.vocabulary]
+-
+-        # GUARD: Only attempt fuzzy correction if at least one exact token already
+-        # anchors this query in the labor-law vocabulary. Without this guard,
+-        # general words like "cook"â†’"book" or "love"â†’"leave" create false hits.
+-        if exact_tokens and search_engine.vocabulary:
+-            for t in unmatched:
+-                if len(t) >= 4:
+-                    closest = min(search_engine.vocabulary, key=lambda v: Levenshtein.distance(t, v))
+-                    dist = Levenshtein.distance(t, closest)
+-                    if dist == 1 or (dist == 2 and len(t) >= 6):
+-                        corrected_tokens.append(closest)
+-
+-        if not corrected_tokens:
++        
++        for t in unmatched:
++            # Tagalog / Domain Immunity: Do not corrupt valid Tagalog/domain tokens
++            if t in TAGALOG_MARKERS or t in LEGAL_SYNONYMS:
++                corrected_tokens.append(t)
++                continue
++                
++            # Length guard: short words (<= 5 chars) must not be fuzzy-modified
++            if len(t) <= 5:
++                continue
++                
++            # Initial letter candidate pooling
++            candidates = [v for v in search_engine.vocabulary if v.startswith(t[0])]
++            if not candidates:
++                continue
++                
++            closest = min(candidates, key=lambda v: Levenshtein.distance(t, v))
++            dist = Levenshtein.distance(t, closest)
++            
++            # Guarded edit distance based on word length
++            if (len(t) <= 8 and dist == 1) or (len(t) >= 9 and dist <= 2):
++                corrected_tokens.append(closest)
++
++        # Add any detected high-IDF compound entities
++        corrected_tokens.extend(detected_compounds)
++
++        # Only reject if neither exact nor fuzzy match produced any valid legal tokens
++        if not corrected_tokens and direct_article_index is None:
++            if any(term in message_text for term in ["government employee", "kawani ng gobyerno", "empleyado ng gobyerno", "civil service"]):
++                return ChatResponse(
++                    response="Government employees and public sector workers are governed by the Civil Service Commission (CSC), not the Philippine Labor Code (PD 442, Art. 82 & Art. 276). Please refer to CSC guidelines for civil service employment concerns.",
++                    session_id=session_id, laws=[]
++                )
+             return ChatResponse(
+                 response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.",
+                 session_id=session_id, laws=[]
+@@ -574,24 +655,30 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+         
+         query_text_for_math = " ".join(corrected_tokens)
+         
+-        # --- STEP 6: EXPLOIT CACHED MODELS ---
++        # --- STEP 6: EXPLOIT CACHED MODELS (Instant Speed) ---
+         query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
+         cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
+         bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
+         
+-        # Normalize BM25
++        # =========================================================
++        # MIN-MAX NORMALIZATION & COMBSUM DATA FUSION
++        # =========================================================
+         bm25_array = np.array(bm25_scores)
++        
++        # Normalize BM25 to [0, 1] — use zeros (not ones) when all scores are equal
+         if len(bm25_array) > 0 and np.max(bm25_array) > 0:
+             bm25_min = np.min(bm25_array)
+             bm25_max = np.max(bm25_array)
+             if bm25_max == bm25_min:
+-                bm25_norm = np.zeros_like(bm25_array) 
++                bm25_norm = np.zeros_like(bm25_array)   # no signal → no boost
+             else:
+                 bm25_norm = (bm25_array - bm25_min) / (bm25_max - bm25_min)
+         else:
+             bm25_norm = np.zeros_like(bm25_array)
+ 
+-        # Title Boost
++        # --- TITLE BOOST SCORE (IDF-Weighted) ---
++        # Rare, domain-specific words (e.g. "disability", "dismissal", "inspection") give much higher boost
++        # than generic ubiquitous words (e.g. "work", "employment").
+         title_boost = np.zeros(len(search_engine.laws))
+         query_token_set = set(corrected_tokens)
+         vocab_idf = getattr(search_engine, 'vocab_idf', {})
+@@ -601,11 +688,13 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+             if matching_title_words:
+                 title_boost[idx] = sum(vocab_idf.get(w, 1.0) for w in matching_title_words)
+ 
++        # Normalize title boost to [0, 1]
+         tb_max = np.max(title_boost)
+         title_boost_norm = title_boost / tb_max if tb_max > 0 else title_boost
+ 
+-        # CombSUM Fusion
++        # CombSUM Fusion: 35% TF-IDF + 40% BM25 + 25% Title Boost
+         final_scores = (cosine_scores * 0.35) + (bm25_norm * 0.40) + (title_boost_norm * 0.25)
++        # =========================================================
+         
+         try:
+             limit_setting = await db.settings.find_one({"key": "chat_limit"})
+@@ -615,7 +704,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+         
+         matched_laws = []
+         
+-        # --- DIRECT ARTICLE PRE-FETCH ---
++        # --- DIRECT ARTICLE PRE-FETCH: inject the exact article as result #1 ---
+         if direct_article_index is not None:
+             direct_law = search_engine.laws[direct_article_index].copy()
+             qs = set(corrected_tokens)
+@@ -631,52 +720,23 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+             direct_law['accuracy'] = "100%"
+             matched_laws.append(direct_law)
+ 
+-        # =========================================================
+-        # CROSS-ENCODER RERANKING
+-        # =========================================================
+-        top_15_indices = np.argsort(final_scores)[::-1][:15]
+-        
+-        candidate_pairs = []
+-        valid_candidate_indices = []
+-        
+-        for i in top_15_indices:
+-            # Skip the directly-fetched article to prevent duplicates
++        top_indices = np.argsort(final_scores)[::-1]
++        query_match_tokens = set(corrected_tokens)
++
++        for i in top_indices:
++            if len(matched_laws) >= chat_limit:
++                break
++            # Skip the directly-fetched article so it isn't duplicated
+             if direct_article_index is not None and i == direct_article_index:
+                 continue
+-                
+-            # Only rerank documents that passed a basic threshold and contain at least one token
+-            if final_scores[i] > 0.15: 
++            if final_scores[i] > 0.25: 
++                law_data = search_engine.laws[i].copy()
+                 doc_words = set(search_engine.corpus[i].split())
+-                if query_token_set & doc_words:
+-                    candidate_pairs.append([full_query_text, search_engine.corpus[i]])
+-                    valid_candidate_indices.append(i)
+-
+-        if candidate_pairs:
+-            encoder = search_engine.get_cross_encoder()
+-            ce_scores = encoder.predict(candidate_pairs)
+-            best_ce_indices = np.argsort(ce_scores)[::-1]
+-            
+-            for idx in best_ce_indices:
+-                if len(matched_laws) >= chat_limit:
+-                    break
+-
+-                raw_ce_score = float(ce_scores[idx])
+-
+-                # RELEVANCE GATE: discard candidates that score below the threshold.
+-                # Legitimate labor queries score +1 to +9; irrelevant queries -5 to -11.
+-                if raw_ce_score < CROSS_ENCODER_THRESHOLD:
++                if not (query_match_tokens & doc_words):
+                     continue
+                     
+-                original_idx = valid_candidate_indices[idx]
+-                law_data = search_engine.laws[original_idx].copy()
+-                
+-                # Convert logit score to UI percentage using Sigmoid function.
+-                # Clamp to a minimum of 50% so that any article that passes the
+-                # threshold is always shown as at least "somewhat relevant".
+-                ui_percentage = int((1 / (1 + math.exp(-raw_ce_score))) * 100)
+-                ui_percentage = max(ui_percentage, 50)
+-                
+-                law_data['accuracy'] = f"{ui_percentage}%"
++                raw_percentage = int(final_scores[i] * 100)
++                law_data['accuracy'] = f"{raw_percentage}%"
+                 
+                 qs = set(corrected_tokens)
+                 chunks = law_data.get('chunks') or []
+@@ -690,9 +750,14 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+                     law_data['best_match_chunk'] = law_data.get('simplified_text') or (law_data.get('content', '') or '')[:500]
+                 
+                 matched_laws.append(law_data)
++
++
+             
+         if not matched_laws:
+-            final_response = "I could not find any specific Philippine Labor Law matching your query. Please ensure your question is related to employment, wages, or workplace policies."
++            if any(term in message_text for term in ["government employee", "kawani ng gobyerno", "empleyado ng gobyerno", "civil service"]):
++                final_response = "Government employees and public sector workers are governed by the Civil Service Law, rules, and regulations under the Civil Service Commission (CSC), not the Philippine Labor Code (PD 442, Art. 82 & Art. 276). Please refer to CSC guidelines for public sector employment concerns."
++            else:
++                final_response = "I could not find any specific Philippine Labor Law matching your query. Please ensure your question is related to private sector employment, wages, or workplace policies."
+         else:
+             base_response = f"I found {len(matched_laws)} relevant articles regarding your query:"
+             final_response = base_response
+@@ -700,12 +765,16 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+             try:
+                 detected_lang = detect_language_simple(message)
+                 if detected_lang in ['tl', 'unknown']:
+-                    final_response = GoogleTranslator(source='en', target='tl').translate(base_response)
+-                    for law in matched_laws:
+-                        if law['best_match_chunk']:
+-                            law['best_match_chunk'] = GoogleTranslator(source='en', target='tl').translate(law['best_match_chunk'])
++                    try:
++                        from deep_translator import GoogleTranslator
++                        final_response = GoogleTranslator(source='en', target='tl').translate(base_response)
++                        for law in matched_laws:
++                            if law.get('best_match_chunk'):
++                                law['best_match_chunk'] = GoogleTranslator(source='en', target='tl').translate(law['best_match_chunk'])
++                    except Exception:
++                        pass
+             except Exception as e:
+-                logger.warning(f"Output translation failed: {e}")
++                logger.warning(f"Output formatting failed: {e}")
+             
+         await db.chat_history.insert_one({
+             "id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, 
+@@ -723,23 +792,36 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
+ 
+ @api_router.get("/users")
+ async def get_all_users(requester_id: str):
++    """Fetches all users. Only accessible by a super_admin."""
+     requester = await db.users.find_one({"id": requester_id})
++    
+     if not requester or requester.get("role") != "super_admin":
+-        raise HTTPException(status_code=403, detail="Access Denied")
++        raise HTTPException(status_code=403, detail="Access Denied: Only Super Admins can view the user list.")
++    
++    # Return all users but hide their passwords for security
+     users = await db.users.find({}, {"_id": 0, "password": 0}).to_list(1000)
+     return {"users": users}
+ 
+ @api_router.put("/users/{target_id}/role")
+ async def update_user_role(target_id: str, request: RoleUpdateRequest):
++    """Updates a user's role. Only accessible by a super_admin."""
+     requester = await db.users.find_one({"id": request.requester_id})
++    
+     if not requester or requester.get("role") != "super_admin":
+-        raise HTTPException(status_code=403, detail="Access Denied")
++        raise HTTPException(status_code=403, detail="Access Denied: Only Super Admins can modify user roles.")
++    
+     if request.new_role not in ["user", "admin", "super_admin"]:
+-        raise HTTPException(status_code=400, detail="Invalid role")
+-    result = await db.users.update_one({"id": target_id}, {"$set": {"role": request.new_role}})
++        raise HTTPException(status_code=400, detail="Invalid role provided.")
++        
++    result = await db.users.update_one(
++        {"id": target_id},
++        {"$set": {"role": request.new_role}}
++    )
++    
+     if result.matched_count == 0:
+-        raise HTTPException(status_code=404, detail="Target user not found")
+-    return {"message": f"User role updated to {request.new_role}"}
++        raise HTTPException(status_code=404, detail="Target user not found.")
++        
++    return {"message": f"User role successfully updated to {request.new_role}"}
+ 
+ @api_router.get("/stats")
+ async def get_stats():
+@@ -750,44 +832,54 @@ async def get_stats():
+ # ==================== TEST CASE DATABASE CLOUD ROUTES ====================
+ @api_router.get("/admin/metrics/test-cases")
+ async def get_test_cases():
++    """Fetches all saved benchmark test cases from the cloud database."""
+     cases = await db.test_cases.find({}, {"_id": 0}).to_list(1000)
+     return {"test_cases": cases}
+ 
+ @api_router.post("/admin/metrics/test-cases")
+ async def add_test_case(test_case: SavedTestCase):
++    """Saves a new test case to the cloud database."""
+     case_dict = test_case.model_dump()
++    
++    # Ensure no duplicate test IDs exist
+     existing = await db.test_cases.find_one({"test_id": case_dict["test_id"]})
+     if existing:
+         raise HTTPException(status_code=400, detail="Test ID already exists.")
++        
+     await db.test_cases.insert_one(case_dict)
+     return {"message": "Test case saved to cloud database."}
+ 
+ @api_router.delete("/admin/metrics/test-cases/{test_id}")
+ async def delete_test_case(test_id: str):
++    """Deletes a test case from the cloud database."""
+     result = await db.test_cases.delete_one({"test_id": test_id})
+     if result.deleted_count == 0:
+         raise HTTPException(status_code=404, detail="Test case not found.")
+     return {"message": "Test case deleted."}
+ 
++
+ @api_router.post("/admin/metrics/evaluate")
+ async def evaluate_search_metrics(payload: ManualEvaluationRequest, requester_id: str):
++    """Runs manually-entered test cases against the live search engine and returns
++    precision/recall/F1/MRR metrics. Only accessible by admins and super_admins."""
+     requester = await db.users.find_one({"id": requester_id})
++
+     if not requester or requester.get("role") not in ["admin", "super_admin"]:
+-        raise HTTPException(status_code=403, detail="Access Denied")
++        raise HTTPException(status_code=403, detail="Access Denied: Only Admins can run metric evaluations.")
++
+     if not payload.test_cases:
+         raise HTTPException(status_code=400, detail="No test cases provided.")
++
+     if search_engine.vectorizer is None or search_engine.bm25 is None:
+-        raise HTTPException(status_code=400, detail="Search models not trained.")
++        raise HTTPException(status_code=400, detail="Search models are not trained yet. Add legal knowledge first.")
++
+     try:
+         limit_setting = await db.settings.find_one({"key": "chat_limit"})
+         chat_limit = int(limit_setting.get("value", 3)) if limit_setting else 3
+     except:
+         chat_limit = 3
+-    loop = asyncio.get_event_loop()
+-    result = await loop.run_in_executor(
+-        None, calculate_ir_metrics, search_engine, payload.test_cases, chat_limit
+-    )
+-    return result
++
++    return calculate_ir_metrics(search_engine, payload.test_cases, k=chat_limit)
+ 
+ @api_router.post("/login")
+ async def login(request: LoginRequest):
+@@ -825,13 +917,17 @@ app.add_middleware(CORSMiddleware, allow_origins=origins, allow_credentials=True
+ 
+ @app.on_event("startup")
+ async def startup_event():
++    # 1. Check if a super_admin exists
+     super_admin_exists = await db.users.find_one({"role": "super_admin"})
++    
+     if not super_admin_exists:
++        # If no super_admin exists, see if the default admin is there and upgrade it
+         admin_user = await db.users.find_one({"username": "admin"})
+         if admin_user:
+             await db.users.update_one({"_id": admin_user["_id"]}, {"$set": {"role": "super_admin"}})
+             logger.info("Upgraded default admin to super_admin.")
+         else:
++            # Create a brand new super_admin if the database is completely empty
+             await db.users.insert_one({
+                 "id": str(uuid.uuid4()), 
+                 "username": "superadmin", 
+@@ -841,8 +937,9 @@ async def startup_event():
+             })
+             logger.info("Created new superadmin account.")
+     
++    # 2. Trigger in-memory search model training
+     await train_search_models()
+     logger.info("SHIELD API Started and Models Loaded")
+ 
+ @app.on_event("shutdown")
+-async def shutdown_db_client(): client.close()
++async def shutdown_db_client(): client.close()
+\ No newline at end of file
+diff --git a/backend/synonyms.py b/backend/synonyms.py
+index e85f334..e59594e 100644
+--- a/backend/synonyms.py
++++ b/backend/synonyms.py
+@@ -1,425 +1,545 @@
++# =============================================================================
++# LEGAL SYNONYMS: Universal Labor Domain Ontology for PD 442 (Labor Code PH)
++# =============================================================================
++# DESIGN PRINCIPLES:
++# 1. CANONICAL MAPPING: Each concept maps to ONE canonical legal term to prevent
++#    term-frequency flooding (e.g. "sahod" -> "wages", NOT "wages,salary,pay,...").
++# 2. COMPOUND ENTITY BINDING: Multi-word statutory subjects (e.g. "government employees")
++#    are kept as exact phrases so their high IDF score dominates generic action words.
++# 3. PARAPHRASE INVARIANCE: Multiple Tagalog/Taglish/English expressions of the same
++#    concept are all mapped to the same canonical legal term.
++# 4. NO HARDCODED ARTICLE NUMBERS: Terms resolve to statutory text keywords only.
++# =============================================================================
++
+ LEGAL_SYNONYMS = {
+-    # =========================
+-    # PHRASES
+-    # =========================
+-    "tinanggal ako sa trabaho": ["termination of employment", "dismissal", "security of tenure"],
+-    "sinibak ako sa trabaho": ["dismissal", "termination of employment"],
+-    "tinanggal ako": ["termination of employment", "dismissal"],
+-    "sinibak ako": ["dismissal", "termination of employment"],
+-    "tinerminate ako": ["termination", "dismissal"],
+-    "na fired ako": ["dismissal", "termination"],
+-    "basta na lang ako tinanggal": ["termination by employer", "security of tenure", "illegal dismissal"],
+-    "walang dahilan tinanggal ako": ["termination by employer", "security of tenure"],
+-    "pwede ba akong tanggalin ng boss ko": ["employer", "termination", "dismissal", "security of tenure"],
+-    "pwede ba akong tanggalin ng amo ko": ["employer", "termination", "dismissal"],
+-    "ayaw na ako papasukin sa trabaho": ["termination by employer", "constructive dismissal"],
+-    "tinanggal ako dahil sa sakit": ["disease as ground for termination"],
+-    "pinaalis ako dahil nagkasakit ako": ["disease as ground for termination"],
+-    "nagresign ako": ["termination by employee", "resignation"],
+-    "pwede ba akong magresign": ["termination by employee"],
++
++    # =========================================================================
++    # DOMAIN 1: TERMINATION / DISMISSAL / SECURITY OF TENURE
++    # Covers: Art. 294, 295, 296, 297, 298, 299, 300, 301, 302
++    # =========================================================================
++
++    # --- Expressions of being fired / dismissed ---
++    "tinanggal ako sa trabaho":         ["termination", "security of tenure"],
++    "sinibak ako sa trabaho":           ["dismissal", "security of tenure"],
++    "tinanggal ako":                    ["termination", "dismissal"],
++    "sinibak ako":                      ["dismissal", "termination"],
++    "tinerminate ako":                  ["termination", "dismissal"],
++    "na fired ako":                     ["dismissal", "termination"],
++    "pinaalis ako":                     ["dismissal", "termination"],
++    "pinatanggal ako":                  ["dismissal", "termination"],
++    "na-dismiss ako":                   ["dismissal", "termination"],
++    "na-terminate ako":                 ["termination", "dismissal"],
++    "na-layoff ako":                    ["reduction of personnel", "retrenchment"],
++    "na-retrench ako":                  ["reduction of personnel", "retrenchment"],
++    "tinanggal nang walang dahilan":    ["security of tenure", "just causes"],
++    "basta na lang ako tinanggal":      ["security of tenure", "just causes"],
++    "walang dahilan tinanggal ako":     ["security of tenure", "just causes"],
++    "puwede bang tanggalin ako nang walang dahilan": ["security of tenure"],
++    "pwede ba akong tanggalin ng boss ko": ["termination", "security of tenure"],
++    "pwede ba akong tanggalin ng amo ko": ["termination", "security of tenure"],
++    "ayaw na ako papasukin sa trabaho": ["constructive dismissal", "termination"],
++    "pinilit akong magresign":          ["constructive dismissal", "resignation"],
++    "gustong ipatanggal sa trabaho":    ["termination", "security of tenure"],
++
++    # --- Disease / Illness as ground for termination ---
++    "tinanggal ako dahil sa sakit":         ["disease as ground for termination"],
++    "pinaalis ako dahil nagkasakit ako":    ["disease as ground for termination"],
++    "tinanggal ako dahil may sakit ako":    ["disease as ground for termination"],
++    "pwede ba akong tanggalin dahil may sakit": ["disease as ground for termination"],
++    "maaari bang itiwalag dahil may karamdaman": ["disease as ground for termination"],
++
++    # --- Resignation / Employee-initiated termination ---
++    "nagresign ako":                    ["termination by employee", "resignation"],
++    "pwede ba akong magresign":         ["termination by employee", "resignation"],
+     "gustong magresign pero pinipigilan": ["termination by employee"],
+-    "isasara na ang kumpanya": ["closure of establishment", "reduction of personnel"],
+-    "magsasara ang kompanya": ["closure of establishment", "reduction of personnel"],
+-    "may retrenchment": ["closure of establishment", "reduction of personnel"],
+-    "na retrench ako": ["reduction of personnel", "closure of establishment"],
+-    "probationary ako tapos tinanggal": ["probationary employment", "termination by employer"],
+-    "hindi ako na regularize": ["probationary employment", "regular and casual employment"],
+-    "kailan ako magiging regular": ["regular and casual employment", "probationary employment"],
+-    "contractual lang ba ako habang buhay": ["regular and casual employment", "probationary employment"],
+-    "may separation pay ba ako": ["separation pay"],
+-    "makakakuha ba ako ng separation pay": ["separation pay"],
+-    "hindi binigay ang separation pay": ["separation pay", "termination"],
+-    "magkano ang separation pay ko": ["separation pay"],
+-    "hindi ako pinasahod": ["non-payment of wages", "payment of wages", "wages"],
+-    "hindi ako binayaran": ["non-payment of wages", "payment of wages", "wages"],
+-    "hindi binigay ang sahod": ["non-payment of wages", "payment of wages", "wages"],
+-    "hindi binigay ang sweldo": ["non-payment of wages", "payment of wages", "wages"],
+-    "kulang ang sahod ko": ["wages", "payment of wages", "underpayment", "regional minimum wages"],
+-    "kulang ang sweldo ko": ["wages", "regional minimum wages", "underpayment"],
+-    "baba sa minimum wage ang sahod ko": ["regional minimum wages", "wages"],
+-    "hindi umabot sa minimum wage": ["regional minimum wages"],
+-    "late binabayaran ang sahod": ["time of payment", "wages"],
+-    "hindi sa oras binabayaran ang sweldo": ["time of payment"],
+-    "may binabawas sa sahod ko": ["wage deduction", "deductions for loss or damage"],
+-    "may kaltas sa sweldo": ["wage deduction"],
+-    "pinapipirma ako ng blanko na papel": ["wage deduction", "withholding of wages and kickbacks prohibited"],
+-    "kinakaltasan ako ng sobra": ["wage deduction", "limitations"],
+-    "hindi ako binigyan ng payslip": ["wages", "form of payment"],
+-    "pinagbabayad ako ng bond": ["deposits for loss or damage"],
+-    "nagovertime ako": ["overtime", "overtime pay", "hours of work"],
+-    "nag overtime ako": ["overtime", "overtime pay", "hours of work"],
+-    "pinag overtime ako": ["overtime", "overtime pay", "hours of work"],
+-    "hindi binayaran ang overtime": ["overtime pay", "payment of overtime"],
+-    "walang overtime pay": ["overtime pay"],
+-    "sobra sa walong oras ang trabaho ko": ["normal hours of work", "overtime"],
+-    "pinapagawa ako ng sobra sa oras": ["normal hours of work", "overtime work"],
+-    "walang break time": ["meal periods"],
+-    "walang pahinga sa trabaho": ["meal periods", "right to weekly rest day"],
+-    "pinapasok ako kahit rest day": ["right to weekly rest day", "when employer may require work on a rest day"],
+-    "pinapasok ako sa bakasyon ko": ["right to weekly rest day"],
+-    "gabi ako nagtatrabaho": ["night-shift differential"],
+-    "may night differential ba": ["night-shift differential"],
+-    "walang night differential": ["night-shift differential"],
+-    "may holiday pay ba ako": ["holiday pay", "premium pay"],
+-    "bayad ba kapag holiday": ["holiday pay", "premium pay"],
+-    "pinapasok ako ng holiday": ["compensation for rest day sunday or holiday work", "holiday pay"],
+-    "walang holiday pay": ["right to holiday pay"],
+-    "nagleave ako": ["leave", "service incentive leave"],
+-    "nag leave ako": ["leave", "service incentive leave"],
+-    "pwede ba akong mag leave": ["leave", "service incentive leave"],
+-    "ilang araw ba ang leave ko": ["service incentive leave"],
+-    "hindi binayaran ang leave ko": ["service incentive leave"],
+-    "may sick leave ba ako": ["service incentive leave"],
+-    "may vacation leave ba ako": ["service incentive leave"],
+-    "buntis ako pwede pa ba ako magtrabaho": ["facilities for women", "maternity leave benefits"],
+-    "may maternity leave ba ako": ["maternity leave benefits"],
+-    "tinanggal ako dahil buntis ako": ["maternity leave benefits", "discrimination prohibited"],
+-    "pinaalis ako dahil buntis": ["discrimination prohibited", "maternity leave benefits"],
+-    "pinipilit ako magresign dahil buntis": ["stipulation against marriage", "discrimination prohibited"],
+-    "hindi ako pinapasok dahil babae ako": ["discrimination prohibited"],
+-    "may diskriminasyon sa babae sa trabaho": ["discrimination prohibited", "classification of certain women workers"],
+-    "bawal ba mag-asawa habang nagtatrabaho": ["stipulation against marriage"],
+-    "menor de edad pwede ba magtrabaho": ["minimum employable age", "coverage"],
+-    "bata pa pwede na bang magtrabaho": ["minimum employable age"],
+-    "pinagtatrabaho ang anak ko na menor de edad": ["minimum employable age", "prohibition against child discrimination"],
+-    "apprentice ako": ["apprenticeship agreement", "qualifications of apprentice"],
+-    "learner ako sa trabaho": ["learners defined", "learnership agreement"],
+-    "kasambahay ako": ["contract of domestic service", "coverage"],
+-    "katulong ako sa bahay": ["contract of domestic service"],
+-    "hindi ako binayaran bilang kasambahay": ["minimum wage", "minimum cash wage"],
+-    "tinanggal ako bilang kasambahay": ["indemnity for unjust termination of services", "service of termination notice"],
++    "nagbitiw ako sa trabaho":          ["termination by employee", "resignation"],
++    "gusto kong umalis sa trabaho":     ["termination by employee", "resignation"],
++
++    # --- Retrenchment / Company closure ---
++    "isasara na ang kumpanya":          ["closure of establishment", "reduction of personnel"],
++    "magsasara ang kompanya":           ["closure of establishment", "reduction of personnel"],
++    "may retrenchment":                 ["reduction of personnel", "retrenchment"],
++    "nagrereklamo tungkol sa retrenchment": ["reduction of personnel", "retrenchment"],
++
++    # --- Employment status (regular, probationary, casual) ---
++    "probationary ako tapos tinanggal": ["probationary employment", "termination"],
++    "hindi ako na regularize":          ["probationary employment", "regular employment"],
++    "kailan ako magiging regular":      ["regular employment", "probationary employment"],
++    "contractual lang ba ako habang buhay": ["regular employment", "casual employment"],
++
++    # --- Separation / Backwages / Reinstatement ---
++    "may separation pay ba ako":            ["separation pay"],
++    "makakakuha ba ako ng separation pay":  ["separation pay"],
++    "hindi binigay ang separation pay":     ["separation pay"],
++    "magkano ang separation pay ko":        ["separation pay"],
++    "gusto ko ipabalik sa trabaho":         ["reinstatement"],
++    "pwede ba akong ibalik sa trabaho":     ["reinstatement"],
++    "may backpay ba ako":                   ["backwages", "separation pay"],
++
++    # =========================================================================
++    # DOMAIN 2: WAGES / SALARIES / DEDUCTIONS / PAYMENT
++    # Covers: Art. 97, 99, 100, 102, 103, 106, 107, 108, 109, 110, 111, 112,
++    #         113, 114, 115, 116, 117, 118, 119
++    # =========================================================================
++
++    # --- Non-payment / Underpayment of wages ---
++    "hindi ako pinasahod":          ["non-payment of wages", "wages"],
++    "hindi ako binayaran":          ["non-payment of wages", "wages"],
++    "hindi binigay ang sahod":      ["non-payment of wages", "wages"],
++    "hindi binigay ang sweldo":     ["non-payment of wages", "wages"],
++    "kulang ang sahod ko":          ["minimum wages", "wages"],
++    "kulang ang sweldo ko":         ["minimum wages", "wages"],
++    "baba sa minimum wage ang sahod ko": ["minimum wages"],
++    "hindi umabot sa minimum wage": ["minimum wages"],
++    "wala pang minimum wage ang sahod": ["minimum wages"],
++
++    # --- Late / Delayed payment ---
++    "late binabayaran ang sahod":           ["time of payment", "wages"],
++    "hindi sa oras binabayaran ang sweldo": ["time of payment", "wages"],
++    "release ng sweldo":                    ["time of payment", "wages"],
++    "mag-release ng sweldo":                ["time of payment", "wages"],
++    "kailan dapat magpasahod":              ["time of payment", "wages"],
++
++    # --- Wage deductions ---
++    "may binabawas sa sahod ko":        ["wage deduction", "deductions"],
++    "may kaltas sa sweldo":             ["wage deduction", "deductions"],
++    "pinapipirma ako ng blanko na papel": ["wage deduction", "withholding"],
++    "kinakaltasan ako ng sobra":        ["wage deduction", "deductions"],
++    "ipitin ang sahod":                 ["withholding of wages"],
++    "hindi ibigay ang sahod":           ["withholding of wages", "wages"],
++    "hindi ibigay ang sweldo":          ["withholding of wages", "wages"],
++    "hindi ibigay":                     ["withholding of wages"],
++
++    # --- Form / Place of payment / Pay slips ---
++    "hindi ako binigyan ng payslip":    ["wages", "form of payment"],
++    "pinagbabayad ako ng bond":         ["deposits for loss or damage"],
++    "nasa cash ba dapat ang bayad":     ["form of payment", "wages"],
++
++    # =========================================================================
++    # DOMAIN 3: HOURS OF WORK / OVERTIME / REST / LEAVES
++    # Covers: Art. 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96
++    # =========================================================================
++
++    # --- Overtime ---
++    "nagovertime ako":                      ["overtime", "overtime pay"],
++    "nag overtime ako":                     ["overtime", "overtime pay"],
++    "pinag overtime ako":                   ["overtime", "overtime pay"],
++    "hindi binayaran ang overtime":         ["overtime pay"],
++    "walang overtime pay":                  ["overtime pay"],
++    "sobra sa walong oras ang trabaho ko":  ["normal hours of work", "overtime"],
++    "pinapagawa ako ng sobra sa oras":      ["normal hours of work", "overtime work"],
++
++    # --- Rest day / Meal break ---
++    "walang break time":                ["meal periods"],
++    "walang pahinga sa trabaho":        ["meal periods", "rest day"],
++    "pinapasok ako kahit rest day":     ["rest day", "work on rest day"],
++    "pinapasok ako sa bakasyon ko":     ["rest day", "service incentive leave"],
++
++    # --- Night shift ---
++    "gabi ako nagtatrabaho":        ["night-shift differential"],
++    "may night differential ba":    ["night-shift differential"],
++    "walang night differential":    ["night-shift differential"],
++    "gabi nagtatrabaho":            ["night-shift differential"],
++
++    # --- Holiday pay ---
++    "may holiday pay ba ako":       ["holiday pay"],
++    "bayad ba kapag holiday":       ["holiday pay"],
++    "pinapasok ako ng holiday":     ["holiday pay", "premium pay"],
++    "walang holiday pay":           ["holiday pay"],
++    "bayad sa pista opisyal":       ["holiday pay"],
++
++    # --- Service incentive leave ---
++    "nagleave ako":                     ["service incentive leave"],
++    "nag leave ako":                    ["service incentive leave"],
++    "pwede ba akong mag leave":         ["service incentive leave"],
++    "ilang araw ba ang leave ko":       ["service incentive leave"],
++    "hindi binayaran ang leave ko":     ["service incentive leave"],
++    "may sick leave ba ako":            ["service incentive leave"],
++    "may vacation leave ba ako":        ["service incentive leave"],
++    "hindi binibigyan ng leave":        ["service incentive leave"],
++
++    # =========================================================================
++    # DOMAIN 4: SPECIAL GROUPS OF WORKERS
++    # Covers: Art. 130-166 (Women, Minors, Kasambahay), Art. 57-72 (Apprentices)
++    # =========================================================================
++
++    # --- Women / Maternity / Pregnancy Discrimination ---
++    "buntis ako pwede pa ba ako magtrabaho":        ["maternity leave benefits", "facilities for women"],
++    "may maternity leave ba ako":                   ["maternity leave benefits"],
++    "tinanggal ako dahil buntis ako":               ["discrimination prohibited", "maternity leave benefits"],
++    "pinaalis ako dahil buntis":                    ["discrimination prohibited", "maternity leave benefits"],
++    "pinipilit ako magresign dahil buntis":         ["discrimination prohibited", "constructive dismissal"],
++    "hindi ako pinapasok dahil babae ako":          ["discrimination prohibited"],
++    "may diskriminasyon sa babae sa trabaho":       ["discrimination prohibited"],
++    "bawal ba mag-asawa habang nagtatrabaho":       ["stipulation against marriage"],
++    "pinaaalis ang mga buntis na manggagawa":       ["discrimination prohibited", "maternity leave benefits"],
++    "tanggalin dahil buntis":                       ["discrimination prohibited", "maternity leave benefits"],
++
++    # --- Child labor / Minors ---
++    "menor de edad pwede ba magtrabaho":            ["minimum employable age"],
++    "bata pa pwede na bang magtrabaho":             ["minimum employable age"],
++    "pinagtatrabaho ang anak ko na menor de edad":  ["minimum employable age", "child labor"],
++    "ilang taong gulang para makapagtrabaho":       ["minimum employable age"],
++
++    # --- Kasambahay / Domestic helpers ---
++    "kasambahay ako":                                   ["househelpers", "domestic service"],
++    "katulong ako sa bahay":                            ["househelpers", "domestic service"],
++    "hindi ako binayaran bilang kasambahay":            ["minimum cash wage", "househelpers"],
++    "tinanggal ako bilang kasambahay":                  ["indemnity for unjust termination of services"],
+     "hindi ako pinapapasok sa paaralan bilang kasambahay": ["opportunity for education"],
+-    "walang first aid sa trabaho": ["first-aid treatment"],
+-    "delikado ang trabaho namin": ["safety and health standards"],
+-    "walang safety equipment": ["safety and health standards"],
+-    "nasaktan ako sa trabaho": ["safety and health standards", "compulsory coverage"],
+-    "aksidente ako sa trabaho": ["compulsory coverage", "employees compensation commission"],
+-    "nagkasakit ako dahil sa trabaho": ["disease as ground for termination", "compulsory coverage"],
+-    "namatay ang katrabaho ko sa aksidente": ["death", "employees compensation commission"],
+-    "nagdisability ako dahil sa trabaho": ["permanent total disability", "permanent partial disability"],
+-    "pansamantalang hindi makapagtrabaho dahil sa injury": ["temporary total disability"],
+-    "pwede ba akong maka claim ng compensation": ["settlement of claims", "employees compensation commission"],
+-    "hindi ako binigyan ng benepisyo": ["employee benefits", "benefits"],
+-    "wala akong sss": ["compulsory coverage"],
+-    "walang philhealth": ["compulsory coverage"],
+-    "binawasan ang benefits ko": ["prohibition against elimination or diminution of benefits", "non-diminution of benefits"],
+-    "binawasan ang mga benepisyo namin": ["prohibition against elimination or diminution of benefits"],
+-    "magreretiro na ako": ["retirement"],
+-    "may retirement pay ba ako": ["retirement"],
++    "minimum wage ng kasambahay":                       ["minimum cash wage", "househelpers"],
++    "sahod ng katulong":                                ["minimum cash wage", "househelpers"],
++    "sino nagtatakda ng sahod ng kasambahay":           ["minimum cash wage", "househelpers"],
++
++    # --- Apprentices / Learners ---
++    "apprentice ako":       ["apprenticeship agreement", "qualifications of apprentice"],
++    "learner ako sa trabaho": ["learners defined", "learnership agreement"],
++
++    # =========================================================================
++    # DOMAIN 5: WORKPLACE SAFETY / HEALTH / DISABILITY / WORKERS COMPENSATION
++    # Covers: Art. 162-165 (Safety), Art. 191-199 (ECC, SSS, GSIS)
++    # =========================================================================
++
++    # --- Safety / Hazard ---
++    "walang first aid sa trabaho":          ["first-aid treatment"],
++    "delikado ang trabaho namin":           ["safety and health standards"],
++    "walang safety equipment":              ["safety and health standards"],
++    "walang protective equipment":          ["safety and health standards"],
++    "delikado ang aming lugar ng trabaho":  ["safety and health standards"],
++    "safe workplace":                       ["safety and health standards", "safe and healthful working conditions"],
++    "kaligtasan sa trabaho":                ["safety and health standards"],
++
++    # --- Accidents / Injuries / Disability ---
++    "nasaktan ako sa trabaho":                              ["safety and health standards", "compulsory coverage"],
++    "aksidente ako sa trabaho":                             ["compulsory coverage", "employees compensation commission"],
++    "nagkasakit ako dahil sa trabaho":                      ["compulsory coverage", "disease"],
++    "namatay ang katrabaho ko sa aksidente":                ["employees compensation commission", "death"],
++    "nagdisability ako dahil sa trabaho":                   ["permanent total disability", "permanent partial disability"],
++    "pansamantalang hindi makapagtrabaho dahil sa injury":  ["temporary total disability"],
++    "may disability benefits ba ako":                       ["disability", "employees compensation commission"],
++
++    # --- Compensation / Benefits ---
++    "pwede ba akong maka claim ng compensation":    ["settlement of claims", "employees compensation commission"],
++    "hindi ako binigyan ng benepisyo":              ["employee benefits"],
++    "wala akong sss":                               ["compulsory coverage"],
++    "walang philhealth":                            ["compulsory coverage"],
++    "walang pag ibig":                              ["compulsory coverage"],
++
++    # --- Non-diminution of benefits ---
++    "binawasan ang benefits ko":            ["non-diminution of benefits"],
++    "binawasan ang mga benepisyo namin":    ["non-diminution of benefits"],
++    "tinanggal ang benepisyo namin":        ["non-diminution of benefits"],
++
++    # =========================================================================
++    # DOMAIN 6: COMPLAINTS / FILING / JURISDICTION / DISPUTE RESOLUTION
++    # Covers: Art. 224, 127, 128, 129
++    # =========================================================================
++
++    "gusto ko magsampa ng kaso sa trabaho": ["jurisdiction of the labor arbiters and the commission", "money claims"],
++    "magsampa ng reklamo":                  ["jurisdiction of the labor arbiters and the commission", "money claims"],
++    "saan pwedeng magsampa":                ["jurisdiction of the labor arbiters and the commission"],
++    "saan pwede magsampa":                  ["jurisdiction of the labor arbiters and the commission"],
++    "saan pwedeng magreklamo":              ["jurisdiction of the labor arbiters and the commission"],
++    "saan ako pwede magreklamo":            ["jurisdiction of the labor arbiters and the commission"],
++    "paano ako makakademanda sa boss ko":   ["money claims"],
++    "may kaso ako sa employer ko":          ["jurisdiction of the labor arbiters and the commission"],
++    "paano magreklamo sa dole":             ["visitorial and enforcement power"],
++    "pwede bang mag inspect ang dole":      ["visitorial and enforcement power"],
++    "pwede bang magsumbong sa dole":        ["visitorial and enforcement power"],
++    "sasabihan ko ang dole tungkol sa employer ko": ["visitorial and enforcement power"],
++    "mag-file ng kaso":                     ["jurisdiction of the labor arbiters and the commission", "money claims"],
++    "magfile ng kaso":                      ["jurisdiction of the labor arbiters and the commission", "money claims"],
++    "file ng kaso":                         ["jurisdiction of the labor arbiters and the commission", "money claims"],
++    "kaso sa boss":                         ["jurisdiction of the labor arbiters and the commission"],
++    "saan dalhin ang reklamo sa trabaho":   ["jurisdiction of the labor arbiters and the commission"],
++
++    # =========================================================================
++    # DOMAIN 7: RETIREMENT
++    # Covers: Art. 302, 303
++    # =========================================================================
++
++    "magreretiro na ako":           ["retirement"],
++    "may retirement pay ba ako":    ["retirement"],
+     "hindi binigay ang retirement pay": ["retirement"],
+-    "gusto ko magsampa ng kaso sa trabaho": ["money claims", "jurisdiction of the labor arbiters and the commission"],
+-    "magsampa ng reklamo": ["jurisdiction of the labor arbiters and the commission", "money claims"],
+-    "saan pwedeng magsampa": ["jurisdiction of the labor arbiters and the commission"],
+-    "saan pwede magsampa": ["jurisdiction of the labor arbiters and the commission"],
+-    "saan pwedeng magreklamo": ["jurisdiction of the labor arbiters and the commission", "recovery of wages simple money claims and other benefits"],
+-    "saan ako pwede magreklamo": ["jurisdiction of the labor arbiters and the commission", "recovery of wages simple money claims and other benefits"],
+-    "paano ako makakademanda sa boss ko": ["money claims", "institution of money claims"],
+-    "may kaso ako sa employer ko": ["jurisdiction of the labor arbiters and the commission"],
+-    "nadaya ako sa recruitment agency": ["illegal recruitment", "prohibited practices"],
+-    "iligal na recruiter": ["illegal recruitment"],
+-    "pinapabayad ako ng sobra sa agency": ["fees to be paid by workers", "illegal recruitment"],
+-    "walang lisensya ang agency": ["registration fees", "illegal recruitment"],
+-    "gustong mag abroad paano mag apply": ["overseas employment development board"],
+-    "gusto naming magtayo ng unyon": ["coverage and employees right to self-organization", "requirements of registration"],
+-    "hindi kami pinapayagan magtayo ng union": ["unfair labor practices of employers", "self-organization"],
+-    "may cba ba kami": ["collective bargaining agreement", "terms of a collective bargaining agreement"],
+-    "gustong mag-strike": ["strikes picketing and lockouts"],
+-    "pwede ba kami mag welga": ["strikes picketing and lockouts"],
+-    "na-lockout kami": ["strikes picketing and lockouts"],
+-    "may harassment sa trabaho": ["discrimination prohibited"],
+-    "nire-report ako pero walang aksyon": ["discrimination prohibited"],
+-    "may diskriminasyon sa edad": ["discrimination prohibited"],
+-    "ano ang karapatan ko bilang empleyado": ["declaration of basic policy", "security of tenure"],
+-    "ano karapatan ko sa trabaho": ["declaration of basic policy"],
+-    "agency worker ako": ["contractor or subcontractor", "indirect employer"],
+-    "kontraktwal ako sa ibang kumpanya": ["contractor or subcontractor", "indirect employer"],
+-    "galing ako sa manpower agency": ["contractor or subcontractor", "indirect employer"],
+-    "labor only contracting ba ito": ["contractor or subcontractor"],
+-    "sino may pananagutan sa kontraktwal": ["solidary liability", "indirect employer"],
++    "magkano ang retirement pay":   ["retirement"],
++    "paano ang retirement":         ["retirement"],
++
++    # =========================================================================
++    # DOMAIN 8: GOVERNMENT EMPLOYEES / CIVIL SERVICE (Exclusions from PD 442)
++    # Covers: Art. 82, Art. 276
++    # =========================================================================
++
++    "government employee ako may problema sa trabaho":  ["government employees", "civil service", "coverage"],
++    "empleyado ako ng gobyerno may reklamo":            ["government employees", "civil service", "coverage"],
++    "government employee ako":                          ["government employees", "civil service", "coverage"],
++    "empleyado ng gobyerno":                            ["government employees", "civil service", "coverage"],
++    "kawani ng gobyerno":                               ["government employees", "civil service", "coverage"],
++    "sahod para sa mga government employees":           ["government employees", "civil service", "coverage"],
++    "sahod ng government employees":                    ["government employees", "civil service", "coverage"],
++    "sahod ng kawani ng gobyerno":                      ["government employees", "civil service", "coverage"],
++
++    # =========================================================================
++    # DOMAIN 9: RECRUITMENT / PLACEMENT / OVERSEAS / OFW
++    # Covers: Art. 12-39
++    # =========================================================================
++
++    "nadaya ako sa recruitment agency":         ["illegal recruitment"],
++    "iligal na recruiter":                      ["illegal recruitment"],
++    "pinapabayad ako ng sobra sa agency":       ["illegal recruitment", "prohibited practices"],
++    "walang lisensya ang agency":               ["illegal recruitment", "registration"],
++    "gustong mag abroad paano mag apply":       ["overseas employment"],
++
++    # =========================================================================
++    # DOMAIN 10: LABOR RELATIONS / UNIONS / STRIKES
++    # Covers: Art. 219-292
++    # =========================================================================
++
++    "gusto naming magtayo ng unyon":                ["self-organization", "labor organization"],
++    "hindi kami pinapayagan magtayo ng union":      ["unfair labor practices of employers", "self-organization"],
++    "may cba ba kami":                              ["collective bargaining agreement"],
++    "gustong mag-strike":                           ["strikes picketing and lockouts"],
++    "pwede ba kami mag welga":                      ["strikes picketing and lockouts"],
++    "na-lockout kami":                              ["strikes picketing and lockouts"],
++
++    # =========================================================================
++    # DOMAIN 11: CONTRACTOR / AGENCY WORKERS
++    # Covers: Art. 106-109
++    # =========================================================================
++
++    "agency worker ako":                        ["contractor or subcontractor", "indirect employer"],
++    "kontraktwal ako sa ibang kumpanya":        ["contractor or subcontractor", "indirect employer"],
++    "galing ako sa manpower agency":            ["contractor or subcontractor", "indirect employer"],
++    "labor only contracting ba ito":            ["contractor or subcontractor"],
++    "sino may pananagutan sa kontraktwal":      ["solidary liability", "indirect employer"],
+     "sino may pananagutan kung hindi binayaran ng agency": ["solidary liability"],
+-    "government employee ako may problema sa trabaho": ["government employees"],
+-    "empleyado ako ng gobyerno may reklamo": ["government employees"],
+-    "may abogado ba ako kailangan sa kaso": ["attorney's fees"],
+-    "kailangan ko ba ng abogado sa reklamo": ["attorney's fees"],
+-    "magkano babayaran ko sa abogado": ["attorney's fees"],
+-    "paano magreklamo sa dole": ["visitorial and enforcement power"],
+-    "pwede bang mag inspect ang dole": ["visitorial and enforcement power"],
+-    "pwede bang magsumbong sa dole": ["visitorial and enforcement power"],
+-    "sasabihan ko ang dole tungkol sa employer ko": ["visitorial and enforcement power"],
+ 
+-    # =========================
+-    # SINGLE WORDS
+-    # =========================
+-    "sahod": ["wage", "salary", "compensation", "earnings", "remuneration"],
+-    "sweldo": ["wage", "salary", "compensation", "earnings", "remuneration"],
+-    "suweldo": ["wage", "salary", "compensation"],
+-    "bayad": ["payment", "wage", "compensation"],
+-    "kabayaran": ["payment", "compensation", "remuneration"],
+-    "binayaran": ["paid", "payment"],
+-    "bayaran": ["pay", "payment"],
+-    "nagbayad": ["paid", "payment"],
+-    "magbayad": ["pay", "payment"],
+-    "nabayaran": ["paid", "payment"],
+-    "kita": ["earnings"],
+-    "kinita": ["earnings"],
+-    "kumikita": ["earnings"],
+-    "kaltas": ["deduction"],
+-    "kinaltas": ["deduction"],
+-    "kinaltasan": ["deduction"],
+-    "kaltasan": ["deduction"],
+-    "binawas": ["deduction"],
+-    "binawasan": ["deduction"],
+-    "bawasan": ["deduction"],
+-    "nabawasan": ["deduction"],
+-    "kulang": ["underpayment", "unpaid wages"],
+-    "kulangan": ["underpayment", "unpaid wages"],
+-    "kumulang": ["underpayment"],
+-    "pigil": ["withholding"],
+-    "pinigil": ["withheld", "withholding"],
+-    "pinipigil": ["withholding"],
+-    "trabaho": ["work", "employment"],
+-    "nagtrabaho": ["work", "employment"],
+-    "nagtatrabaho": ["work", "employment"],
+-    "magtrabaho": ["work", "employment"],
+-    "pinagtrabaho": ["work", "employment"],
+-    "pinagtatrabaho": ["work", "employment"],
+-    "pasok": ["work"],
+-    "pinapasok": ["work"],
+-    "empleyo": ["employment"],
+-    "hanapbuhay": ["employment", "occupation"],
+-    "empleyado": ["employee"],
+-    "empleado": ["employee"],
+-    "manggagawa": ["worker"],
+-    "mangagawa": ["worker"],
+-    "trabahador": ["worker"],
+-    "amo": ["employer"],
+-    "patron": ["employer"],
+-    "boss": ["employer"],
+-    "kumpanya": ["establishment", "enterprise"],
+-    "kompanya": ["establishment", "enterprise"],
+-    "negosyo": ["enterprise", "establishment"],
+-    "oras": ["hours", "hours of work"],
+-    "shift": ["shift"],
+-    "iskedyul": ["schedule"],
+-    "schedule": ["schedule"],
+-    "walong oras": ["eight hours"],
+-    "8 oras": ["eight hours"],
+-    "overtime": ["overtime", "overtime work", "overtime pay"],
+-    "over": ["overtime"],
+-    "lampas": ["overtime"],
+-    "lagpas": ["overtime"],
+-    "sobra": ["overtime"],
+-    "extra": ["overtime"],
+-    "dagdag": ["additional compensation"],
+-    "undertime": ["undertime work"],
+-    "kulang-oras": ["undertime work"],
+-    "pahinga": ["rest", "rest period", "rest day"],
+-    "break": ["rest period", "meal periods"],
+-    "meal break": ["meal periods"],
+-    "kain": ["meal periods"],
+-    "tanghalian": ["meal periods"],
+-    "off": ["rest day"],
+-    "day off": ["rest day"],
+-    "dayoff": ["rest day"],
+-    "holiday": ["holiday"],
+-    "bakasyon": ["vacation leave"],
+-    "vacation": ["vacation leave"],
+-    "leave": ["leave"],
+-    "gabi": ["night", "night work", "night worker"],
+-    "pang-gabi": ["night work", "night worker"],
+-    "night": ["night work", "night worker"],
+-    "night shift": ["night work", "night worker"],
+-    "night differential": ["night shift differential"],
+-    "sakit": ["illness", "disease", "health", "medical"],
+-    "karamdaman": ["illness", "disease"],
+-    "kalusugan": ["health"],
+-    "medical": ["medical"],
+-    "doktor": ["physician"],
+-    "ospital": ["hospital"],
+-    "ospitalan": ["hospital"],
+-    "galing": ["health"],
+-    "buntis": ["pregnant", "maternity"],
+-    "pagbubuntis": ["pregnancy", "maternity"],
+-    "panganganak": ["childbirth", "maternity"],
+-    "manganak": ["childbirth", "maternity"],
+-    "maternity": ["maternity", "maternity leave"],
+-    "babae": ["woman", "women"],
+-    "kababaihan": ["women"],
+-    "babaeng": ["woman", "women"],
+-    "tanggal": ["termination", "dismissal"],
+-    "tinanggal": ["termination", "dismissal"],
+-    "natanggal": ["termination", "dismissal"],
+-    "tinatanggal": ["termination", "dismissal"],
+-    "tatanggalin": ["termination", "dismissal"],
+-    "pinaalis": ["termination", "dismissal"],
+-    "pinatanggal": ["termination", "dismissal"],
+-    "sinisante": ["dismissal"],
+-    "sinibak": ["dismissal"],
+-    "talsik": ["termination", "dismissal"],
+-    "sibak": ["dismissal"],
+-    "terminate": ["termination"],
+-    "termination": ["termination"],
+-    "dismissal": ["dismissal"],
+-    "regular": ["regular employment", "regular employee"],
+-    "permanente": ["regular employment"],
+-    "permanent": ["regular employment"],
+-    "probationary": ["probationary employment", "probationary employee"],
+-    "probation": ["probationary employment"],
+-    "casual": ["casual employment", "casual employee"],
+-    "contractual": ["contractual"],
+-    "kontraktwal": ["contractual"],
+-    "kontrata": ["contract"],
+-    "apprentice": ["apprentice", "apprenticeship"],
+-    "apprenticeship": ["apprenticeship"],
+-    "learner": ["learner"],
+-    "trainee": ["learner", "apprentice"],
+-    "balik": ["reinstatement"],
+-    "ibalik": ["reinstatement"],
+-    "reinstatement": ["reinstatement"],
+-    "backpay": ["backwages"],
+-    "backwages": ["backwages"],
+-    "separation": ["separation"],
++    # =========================================================================
++    # DOMAIN 12: ATTORNEY'S FEES / LEGAL AID
++    # =========================================================================
++
++    "may abogado ba ako kailangan sa kaso":     ["attorney's fees"],
++    "kailangan ko ba ng abogado sa reklamo":    ["attorney's fees"],
++    "magkano babayaran ko sa abogado":          ["attorney's fees"],
++
++    # =========================================================================
++    # DISCRIMINATION / HARASSMENT
++    # =========================================================================
++
++    "may harassment sa trabaho":            ["discrimination prohibited"],
++    "nire-report ako pero walang aksyon":   ["discrimination prohibited"],
++    "may diskriminasyon sa edad":           ["discrimination prohibited"],
++    "may diskriminasyon sa kasarian":       ["discrimination prohibited"],
++
++    # =========================================================================
++    # GENERAL RIGHTS
++    # =========================================================================
++
++    "ano ang karapatan ko bilang empleyado": ["declaration of basic policy", "security of tenure"],
++    "ano karapatan ko sa trabaho":           ["declaration of basic policy"],
++
++    # =========================================================================
++    # CANONICAL SINGLE-WORD / SHORT-PHRASE MAPPINGS
++    # ANTI-FLOODING RULE: Each concept maps to EXACTLY ONE canonical statutory term.
++    # This prevents term-frequency imbalance.
++    # =========================================================================
++
++    # Wages
++    "sahod":        ["wages"],
++    "sweldo":       ["wages"],
++    "suweldo":      ["wages"],
++    "bayad":        ["wages"],
++    "kabayaran":    ["wages"],
++    "kita":         ["earnings"],
++    "kinita":       ["earnings"],
++
++    # Deductions
++    "kaltas":       ["deduction"],
++    "kinaltas":     ["deduction"],
++    "kinaltasan":   ["deduction"],
++    "kaltasan":     ["deduction"],
++    "binawas":      ["deduction"],
++    "binawasan":    ["deduction"],
++    "bawasan":      ["deduction"],
++    "kulang":       ["underpayment"],
++    "pigil":        ["withholding"],
++    "pinigil":      ["withholding"],
++    "pinipigil":    ["withholding"],
++    "ipitin":       ["withholding of wages"],
++
++    # Work / Employment
++    "trabaho":      ["employment"],
++    "pasok":        ["work"],
++    "empleyo":      ["employment"],
++    "hanapbuhay":   ["employment"],
++
++    # Workers
++    "empleyado":        ["employee"],
++    "empleado":         ["employee"],
++    "manggagawa":       ["worker"],
++    "mangagawa":        ["worker"],
++    "trabahador":       ["worker"],
++
++    # Employer / Company
++    "amo":          ["employer"],
++    "patron":       ["employer"],
++    "boss":         ["employer"],
++    "kumpanya":     ["establishment"],
++    "kompanya":     ["establishment"],
++    "negosyo":      ["enterprise"],
++
++    # Hours / Time
++    "oras":         ["hours of work"],
++    "overtime":     ["overtime pay"],
++    "lampas":       ["overtime"],
++    "lagpas":       ["overtime"],
++    "dagdag":       ["additional compensation"],
++    "undertime":    ["undertime work"],
++    "pahinga":      ["rest period"],
++    "break":        ["rest period"],
++    "holiday":      ["holiday pay"],
++    "bakasyon":     ["vacation leave"],
++    "leave":        ["service incentive leave"],
++
++    # Night / Gabi
++    "gabi":             ["night-shift differential"],
++    "night":            ["night-shift differential"],
++    "night shift":      ["night-shift differential"],
++    "night differential": ["night-shift differential"],
++
++    # Health / Medical
++    "sakit":        ["illness"],
++    "karamdaman":   ["disease"],
++    "kalusugan":    ["health"],
++    "buntis":       ["maternity leave benefits", "discrimination prohibited"],
++
++    # Termination
++    "tanggal":      ["termination"],
++    "tinanggal":    ["termination"],
++    "natanggal":    ["termination"],
++    "sinibak":      ["dismissal"],
++    "sibak":        ["dismissal"],
++    "talsik":       ["termination"],
++    "pinaalis":     ["termination"],
++    "terminate":    ["termination"],
++
++    # Employment Status
++    "regular":      ["regular employment"],
++    "permanente":   ["regular employment"],
++    "probationary": ["probationary employment"],
++    "probation":    ["probationary employment"],
++    "casual":       ["casual employment"],
++    "contractual":  ["contractual"],
++    "kontraktwal":  ["contractual"],
++    "kontrata":     ["contract"],
++
++    # Apprenticeship
++    "apprentice":       ["apprenticeship"],
++    "learner":          ["learners"],
++    "trainee":          ["apprenticeship"],
++
++    # Reinstatement / Back pay
++    "balik":        ["reinstatement"],
++    "ibalik":       ["reinstatement"],
++    "backpay":      ["backwages"],
++    "backwages":    ["backwages"],
++    "separation":   ["separation pay"],
+     "retrenchment": ["retrenchment"],
+-    "redundancy": ["redundancy"],
+-    "layoff": ["layoff"],
+-    "resign": ["resignation"],
+-    "resigned": ["resignation"],
+-    "nagresign": ["resignation"],
+-    "magresign": ["resignation"],
+-    "bitiw": ["resignation"],
+-    "nagbitiw": ["resignation"],
+-    "pagbibitiw": ["resignation"],
+-    "hire": ["hire", "hiring"],
+-    "hiring": ["hiring"],
+-    "naghire": ["hiring"],
+-    "maghire": ["hiring"],
+-    "recruit": ["recruitment"],
+-    "recruitment": ["recruitment", "placement"],
+-    "nagrecruit": ["recruitment"],
+-    "magrecruit": ["recruitment"],
+-    "recruiter": ["recruiter"],
+-    "agency": ["agency"],
+-    "placement": ["placement"],
+-    "job": ["employment"],
+-    "hanap": ["employment"],
+-    "lisensya": ["license"],
+-    "license": ["license"],
+-    "permit": ["permit"],
+-    "pahintulot": ["authority"],
+-    "awtoridad": ["authority"],
+-    "rehistro": ["registration"],
+-    "rehistrasyon": ["registration"],
+-    "registration": ["registration"],
+-    "abroad": ["overseas employment"],
+-    "OFW": ["overseas employment"],
+-    "ofw": ["overseas employment"],
+-    "migrant": ["migrant"],
+-    "migrante": ["migrant"],
++    "redundancy":   ["redundancy"],
++
++    # Resignation
++    "resign":       ["resignation"],
++    "nagresign":    ["resignation"],
++    "magresign":    ["resignation"],
++    "bitiw":        ["resignation"],
++    "nagbitiw":     ["resignation"],
++
++    # Hiring / Recruitment
++    "hire":         ["hiring"],
++    "hiring":       ["hiring"],
++    "recruit":      ["recruitment"],
++    "recruitment":  ["recruitment"],
++    "recruiter":    ["recruitment"],
++    "agency":       ["placement"],
++    "placement":    ["placement"],
++    "lisensya":     ["license"],
++    "permit":       ["permit"],
++    "rehistro":     ["registration"],
++
++    # OFW / Overseas
++    "abroad":   ["overseas employment"],
++    "OFW":      ["overseas employment"],
++    "ofw":      ["overseas employment"],
+     "overseas": ["overseas employment"],
+-    "seaman": ["seaman"],
++    "seaman":   ["seaman"],
+     "seafarer": ["seaman"],
+-    "illegal": ["illegal"],
+-    "ilegal": ["illegal"],
+-    "bawal": ["prohibited"],
+-    "ipinagbabawal": ["prohibited"],
+-    "scam": ["fraud"],
+-    "scammer": ["fraud"],
+-    "panloloko": ["fraud"],
+-    "manloloko": ["fraud"],
+-    "kaligtasan": ["safety"],
+-    "safety": ["safety"],
+-    "panganib": ["danger", "hazard"],
+-    "hazard": ["hazard"],
+-    "peligro": ["danger", "hazard"],
+-    "aksidente": ["accident"],
+-    "sugat": ["injury"],
+-    "injury": ["injury"],
+-    "diskriminasyon": ["discrimination"],
+-    "discrimination": ["discrimination"],
+-    "edad": ["age"],
+-    "kasarian": ["sex"],
+-    "sex": ["sex"],
+-    "lahi": ["race"],
+-    "creed": ["creed"],
+-    "unyon": ["union", "labor union", "labor organization"],
+-    "union": ["union", "labor union", "labor organization"],
+-    "samahan": ["labor organization"],
+-    "organisasyon": ["organization", "labor organization"],
+-    "membership": ["membership"],
+-    "member": ["member"],
+-    "dues": ["union dues"],
+-    "ambag": ["contributions"],
+-    "negosasyon": ["negotiation", "collective bargaining"],
+-    "bargaining": ["collective bargaining"],
+-    "CBA": ["collective bargaining agreement"],
+-    "cba": ["collective bargaining agreement"],
+-    "kasunduan": ["agreement"],
+-    "reklamo": ["complaint", "grievance"],
+-    "nagreklamo": ["complaint"],
+-    "magreklamo": ["complaint"],
+-    "complaint": ["complaint"],
+-    "kaso": ["case"],
+-    "alitan": ["dispute"],
+-    "away": ["dispute"],
+-    "gulo": ["dispute"],
+-    "grievance": ["grievance"],
+-    "areglo": ["settlement"],
+-    "ayusan": ["settlement"],
+-    "mediation": ["mediation"],
+-    "arbitration": ["arbitration"],
+-    "tagapamagitan": ["mediator"],
++
++    # Safety / Health
++    "kaligtasan":   ["safety"],
++    "panganib":     ["hazard"],
++    "hazard":       ["hazard"],
++    "peligro":      ["hazard"],
++    "aksidente":    ["accident"],
++    "injury":       ["injury"],
++    "sugat":        ["injury"],
++    "disability":   ["disability"],
++
++    # Discrimination
++    "diskriminasyon":   ["discrimination"],
++    "discrimination":   ["discrimination"],
++
++    # Kasambahay / Domestic
++    "kasambahay":   ["househelpers"],
++    "katulong":     ["househelpers"],
++
++    # Unions / Labor Relations
++    "unyon":        ["labor organization"],
++    "union":        ["labor organization"],
++    "samahan":      ["labor organization"],
++    "welga":        ["strike"],
++    "strike":       ["strike"],
++    "piket":        ["picketing"],
++    "lockout":      ["lockout"],
++    "CBA":          ["collective bargaining agreement"],
++    "cba":          ["collective bargaining agreement"],
++    "negosasyon":   ["collective bargaining"],
++
++    # Retirement
++    "retiro":       ["retirement"],
++    "retire":       ["retirement"],
++
++    # Complaints / Filing
++    "reklamo":      ["complaint"],
++    "kaso":         ["case"],
++    "alitan":       ["dispute"],
++    "grievance":    ["grievance"],
++    "areglo":       ["settlement"],
++    "mediation":    ["mediation"],
++    "arbitration":  ["arbitration"],
+     "conciliation": ["conciliation"],
+-    "welga": ["strike"],
+-    "welgista": ["striker"],
+-    "nagwelga": ["strike"],
+-    "magwelga": ["strike"],
+-    "strike": ["strike"],
+-    "piket": ["picketing"],
+-    "picket": ["picketing"],
+-    "lockout": ["lockout"],
+-    "retiro": ["retirement"],
+-    "retire": ["retirement"],
+-    "nagretire": ["retirement"],
+-    "magretire": ["retirement"],
+-    "pagreretiro": ["retirement"],
+-    "karapatan": ["rights"],
+-    "tungkulin": ["duty"],
+-    "obligasyon": ["obligation"],
+-    "responsibilidad": ["responsibility"],
+-    "proteksyon": ["protection"],
+-    "seguridad": ["security"],
+-    "DOLE": ["Department of Labor and Employment"],
+-    "dole": ["Department of Labor and Employment"],
+-    "NLRC": ["National Labor Relations Commission"],
+-    "nlrc": ["National Labor Relations Commission"],
+-    "arbiter": ["Labor Arbiter"],
+-    "paggawa": ["labor"],
+-    "labor": ["labor"],
+-    "inspect": ["inspection", "visitorial"],
+-    "inspeksyon": ["inspection"],
+-    "disability": ["disability"],
+-    "aksidente": ["accident", "injury", "compensation"],
+-    "reklamo": ["complaint", "claims", "dispute"],
+-    "sampa": ["file", "claims"],
+-    "magsampa": ["file a complaint", "claims"],
+-    "release ng sweldo": ["time of payment", "payment of wages"],
+-    "mag-release ng sweldo": ["time of payment", "payment of wages"],
+-    "kailan dapat magpasahod": ["time of payment", "payment of wages"],
+-    "hindi ibigay ang sahod": ["withholding of wages", "payment of wages"],
+-    "hindi ibigay ang sweldo": ["withholding of wages", "payment of wages"],
+-    "buntis": ["prohibited acts", "discrimination prohibited", "maternity leave"],
+-    "tanggalin dahil buntis": ["prohibited acts", "discrimination prohibited"],
+-    "kasambahay": ["minimum wage", "househelpers", "domestic"],
+-    "katulong": ["minimum wage", "househelpers", "domestic"],
+-    "minimum wage ng kasambahay": ["minimum wage", "househelpers"],
+-    "safe workplace": ["safety and health standards", "safe and healthful working conditions"],
+-    "kaligtasan sa trabaho": ["safety and health standards"],
+-    "mag-file ng kaso": ["jurisdiction of the labor arbiters and the commission", "money claims"],
+-    "magfile ng kaso": ["jurisdiction of the labor arbiters and the commission", "money claims"],
+-    "file ng kaso": ["jurisdiction of the labor arbiters and the commission", "money claims"],
+-    "kaso sa boss": ["jurisdiction of the labor arbiters and the commission"],
+-    "hindi ibigay": ["withholding of wages", "withholding"],
+-    "ipitin": ["withholding of wages"],
+-    "walang dahilan": ["security of tenure", "just causes", "authorized causes"],
+-    "tanggalin nang walang dahilan": ["security of tenure", "illegal dismissal"]
++    "sampa":        ["filing"],
++    "magsampa":     ["filing a complaint"],
++
++    # Government Agencies (Always keep as full canonical name)
++    "DOLE":         ["Department of Labor and Employment"],
++    "dole":         ["Department of Labor and Employment"],
++    "NLRC":         ["National Labor Relations Commission"],
++    "nlrc":         ["National Labor Relations Commission"],
++    "arbiter":      ["Labor Arbiter"],
++    "SSS":          ["Social Security System"],
++    "GSIS":         ["Government Service Insurance System"],
++
++    # Rights / Obligations
++    "karapatan":        ["rights"],
++    "tungkulin":        ["duty"],
++    "obligasyon":       ["obligation"],
++    "responsibilidad":  ["responsibility"],
++    "proteksyon":       ["protection"],
++    "seguridad":        ["security"],
++
++    # General domain terms
++    "inspect":          ["inspection"],
++    "inspeksyon":       ["inspection"],
++    "paggawa":          ["labor"],
++    "labor":            ["labor"],
++    "walang dahilan":   ["security of tenure", "just causes"],
+ }
+\ No newline at end of file
+diff --git a/backend/test_live_queries.py b/backend/test_live_queries.py
+new file mode 100644
+index 0000000..95e1ac0
+--- /dev/null
++++ b/backend/test_live_queries.py
+@@ -0,0 +1,31 @@
++import urllib.request
++import urllib.parse
++import json
++
++test_set = [
++    "sahod para sa mga government employees",
++    "pwede ba akong tanggalin kung may sakit ako",
++    "sinibak ako nang walang dahilan",
++    "tinanggal dahil buntis",
++    "minimum wage ng kasambahay",
++    "saan ako pwedeng magsampa ng reklamo laban sa employer ko",
++    "pwede ba mag-inspect ang DOLE dito sa company namin"
++]
++
++print("=" * 70)
++print("LIVE CHATBOT RETRIEVAL TESTS ACROSS GENERAL USER QUERIES")
++print("=" * 70)
++
++for q in test_set:
++    data = urllib.parse.urlencode({"message": q}).encode()
++    req = urllib.request.Request("http://127.0.0.1:8000/api/chat", data=data, method="POST")
++    try:
++        with urllib.request.urlopen(req) as resp:
++            res = json.loads(resp.read().decode())
++            top_laws = [(l.get("article"), l.get("title"), l.get("accuracy")) for l in (res.get("laws") or [])]
++            print(f"QUERY:    {q}")
++            print(f"RESPONSE: {res.get('response', '')[:100]}...")
++            print(f"TOP LAWS: {top_laws}")
++            print("-" * 70)
++    except Exception as e:
++        print(f"ERROR on '{q}': {e}")

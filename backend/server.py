@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from fastapi import FastAPI, APIRouter, HTTPException, Form, BackgroundTasks
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
@@ -22,7 +22,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 from langdetect import detect, DetectorFactory
 from deep_translator import GoogleTranslator
-from sentence_transformers import CrossEncoder
 import bcrypt
 
 # Import the external synonyms dictionary
@@ -65,14 +64,15 @@ class SearchEngine:
     # Do NOT download/initialize on module import:
     cross_encoder = None
 
-@classmethod
-def get_cross_encoder(cls):
-    """Lazy load the cross encoder only when first needed."""
-    if cls.cross_encoder is None:
-        logger.info("Loading Cross-Encoder model into memory...")
-        cls.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
-        logger.info("Cross-Encoder model successfully loaded.")
-    return cls.cross_encoder
+    @classmethod
+    def get_cross_encoder(cls):
+        """Lazy load the cross encoder only when first needed."""
+        if cls.cross_encoder is None:
+            logger.info("Loading Cross-Encoder model into memory...")
+            from sentence_transformers import CrossEncoder
+            cls.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+            logger.info("Cross-Encoder model successfully loaded.")
+        return cls.cross_encoder
 
 class BulkDeleteRequest(BaseModel):
     ids: List[str]
@@ -97,7 +97,7 @@ async def train_search_models():
         search_engine.bm25 = None
         return
 
-    search_engine.laws = None
+    search_engine.laws = all_laws
     corpus = []
     title_corpus = []
     article_numbers = []
