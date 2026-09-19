@@ -1,5 +1,5 @@
 ﻿from __future__ import annotations
-from fastapi import FastAPI, APIRouter, HTTPException, Form, BackgroundTasks
+from fastapi import FastAPI, APIRouter, UploadFile, File, HTTPException, Form, BackgroundTasks
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
@@ -11,18 +11,18 @@ from pydantic import BaseModel, Field, ConfigDict
 from typing import List, Optional, Union, Any
 import uuid
 from datetime import datetime, timezone
+import PyPDF2
+import io
 import Levenshtein
 import numpy as np
 import re
-import math
 
 # NLP and Math libraries
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from rank_bm25 import BM25Okapi
 from langdetect import detect, DetectorFactory
-from deep_translator import GoogleTranslator
-import bcrypt
+import math
 
 # Import the external synonyms dictionary
 from synonyms import LEGAL_SYNONYMS
@@ -51,8 +51,9 @@ api_router = APIRouter(prefix="/api")
 class SearchEngine:
     laws = []
     corpus = []
-    title_corpus = []
-    article_numbers = []
+    title_corpus = []          # stores ONLY article number + title + tags (no body)
+    intent_corpus = []         # stores intent_keywords field per article for domain bridging
+    article_numbers = []       # stores the raw article number string per law (e.g. "article 1")
     tokenized_corpus = []
     vocabulary = set()
     vectorizer = None
@@ -60,24 +61,44 @@ class SearchEngine:
     vocab_idf = {}
     bm25 = None
     highest_bm25 = 0.0
-    
-    # Do NOT download/initialize on module import:
-    cross_encoder = None
-
-    @classmethod
-    def get_cross_encoder(cls):
-        """Lazy load the cross encoder only when first needed."""
-        if cls.cross_encoder is None:
-            logger.info("Loading Cross-Encoder model into memory...")
-            from sentence_transformers import CrossEncoder
-            cls.cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
-            logger.info("Cross-Encoder model successfully loaded.")
-        return cls.cross_encoder
 
 class BulkDeleteRequest(BaseModel):
     ids: List[str]
 
 search_engine = SearchEngine()
+
+# ==================== LOCAL OFFLINE NMT TRANSLATOR ====================
+_local_translator = None
+
+def get_local_translator():
+    global _local_translator
+    if _local_translator is None:
+        try:
+            from transformers import pipeline as hf_pipeline
+            logger.info("Loading Helsinki-NLP/opus-mt-tl-en offline NMT model...")
+            _local_translator = hf_pipeline(
+                "translation",
+                model="Helsinki-NLP/opus-mt-tl-en",
+                device=-1  # CPU
+            )
+            logger.info("Offline NMT model loaded successfully.")
+        except Exception as e:
+            logger.warning(f"Could not load local NMT model: {e}. Translation fallback enabled.")
+            _local_translator = "FAILED"
+    return _local_translator if _local_translator != "FAILED" else None
+
+def local_translate_tl_to_en(text: str) -> str:
+    if not text or not text.strip():
+        return ""
+    try:
+        translator = get_local_translator()
+        if translator is None:
+            return ""
+        result = translator(text[:500], max_length=256)
+        return result[0].get("translation_text", "") if result else ""
+    except Exception as e:
+        logger.warning(f"Local NMT translation failed: {e}")
+        return ""
 
 async def train_search_models():
     """Fetches all laws from the database and pre-trains the TF-IDF and BM25 models in memory."""
@@ -114,24 +135,22 @@ async def train_search_models():
         body = " ".join(law.get('chunks', [])) if law.get('chunks') else law.get('content', '')
         tags = law.get('tags', [])
         tags_text = " ".join(tags) if isinstance(tags, list) else str(tags)
+        intent_kw = law.get('intent_keywords', [])
+        intent_text = " ".join(intent_kw) if isinstance(intent_kw, list) else str(intent_kw or '')
         article_str = law.get('article', '') or ''
         title_str = law.get('title', '') or ''
         category_str = law.get('category', '') or ''
         
-        # --- Full corpus: article + title (3x boosted) + category + tags (2x boosted) + body ---
-        raw_doc_text = f"{article_str} {title_str} {article_str} {title_str} {category_str} {tags_text} {tags_text} {body}".lower()
+        # Article + title (3x) + category + tags (2x) + intent_keywords (3x) + body
+        raw_doc_text = f"{article_str} {title_str} {article_str} {title_str} {category_str} {tags_text} {tags_text} {intent_text} {intent_text} {intent_text} {body}".lower()
         clean_doc_text = re.sub(r'[^\w\s]', '', raw_doc_text)
         corpus.append(clean_doc_text)
         
-        # --- Title-only corpus: article number + title + category + tags only (no body) ---
-        raw_title_text = f"{article_str} {title_str} {category_str} {tags_text}".lower()
+        raw_title_text = f"{article_str} {title_str} {category_str} {tags_text} {intent_text}".lower()
         clean_title_text = re.sub(r'[^\w\s]', '', raw_title_text)
         title_corpus.append(clean_title_text)
         
-        # --- Store normalized article number for direct lookup ---
         article_numbers.append(re.sub(r'[^\w\s]', '', article_str.lower()).strip())
-        
-        # --- BM25 tokenized corpus: include stopword filtering ---
         tokenized_corpus.append([w for w in clean_doc_text.split() if w not in stopwords and len(w) > 1])
         
     search_engine.vocabulary = set([
@@ -143,19 +162,14 @@ async def train_search_models():
     search_engine.article_numbers = article_numbers
     search_engine.tokenized_corpus = tokenized_corpus
     
-    # Train TF-IDF with bilingual stopwords
-    search_engine.vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words=list(stopwords), min_df=1)
+    search_engine.vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words=list(stopwords), min_df=1, sublinear_tf=True)
     search_engine.tfidf_matrix = search_engine.vectorizer.fit_transform(corpus)
     search_engine.vocab_idf = dict(zip(search_engine.vectorizer.get_feature_names_out(), search_engine.vectorizer.idf_))
     
-    # Train BM25 on stop-word-filtered tokenized corpus
-    search_engine.bm25 = BM25Okapi(tokenized_corpus)
-    
+    search_engine.bm25 = BM25Okapi(tokenized_corpus, k1=1.2, b=0.85)
     logger.info("Search Models successfully trained and loaded into memory!")
 
-
 # ==================== MODELS ====================
-
 class User(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     username: str
@@ -201,6 +215,16 @@ class SavedTestCase(BaseModel):
 LegalKnowledge.model_rebuild()
 
 # ==================== HELPER FUNCTIONS ====================
+async def extract_text_from_pdf(file_content: bytes) -> str:
+    try:
+        pdf_file = io.BytesIO(file_content)
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        for page in pdf_reader.pages:
+            text += page.extract_text() or ""
+        return text
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error extracting PDF: {str(e)}")
 
 def detect_language_simple(text: str) -> str:
     try:
@@ -208,7 +232,6 @@ def detect_language_simple(text: str) -> str:
     except:
         return "unknown"
 
-# --- Conversational noise & filler phrases in Filipino/Taglish ---
 CONVERSATIONAL_FILLERS = [
     r"\bano po ba ang\b", r"\bano po ba\b", r"\bano po\b", r"\bano ba ang\b", r"\bano ba\b",
     r"\bpwede po ba akong\b", r"\bpwede po bang\b", r"\bpwede po ba\b", r"\bpwede bang\b", r"\bpwede ba akong\b", r"\bpwede ba\b",
@@ -220,7 +243,6 @@ CONVERSATIONAL_FILLERS = [
 ]
 
 def clean_conversational_noise(text: str) -> str:
-    """Strips polite conversational preambles, expands hyphens, and normalizes Tagalog ligatures."""
     cleaned = text.lower().replace('"', ' ').replace("'", " ")
     for pattern in CONVERSATIONAL_FILLERS:
         cleaned = re.sub(pattern, " ", cleaned)
@@ -229,7 +251,6 @@ def clean_conversational_noise(text: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 def strip_filipino_affixes(word: str) -> str:
-    """Lightweight rule-based morphological stemmer for Filipino verbs and nouns."""
     w = word.lower()
     if len(w) <= 4:
         return w
@@ -258,7 +279,6 @@ TAGALOG_MARKERS = {
 }
 
 def is_tagalog_or_taglish(text: str) -> bool:
-    """Checks if text contains Tagalog grammatical markers or vocabulary."""
     tokens = set(re.sub(r'[^\w\s]', '', text.lower()).split())
     if tokens & TAGALOG_MARKERS:
         return True
@@ -266,7 +286,6 @@ def is_tagalog_or_taglish(text: str) -> bool:
     return detected in ['tl', 'unknown', 'id', 'ms', 'sk', 'cy', 'hr']
 
 async def get_or_create_translation(text: str) -> str:
-    """Fetches translation with persistent MongoDB cache for 100% determinism and speed."""
     if not text.strip():
         return ""
     try:
@@ -276,20 +295,23 @@ async def get_or_create_translation(text: str) -> str:
     except Exception:
         pass
     
-    try:
-        translated = GoogleTranslator(source='tl', target='en').translate(text)
-        if translated:
-            try:
-                await db.translation_cache.insert_one({"query": text, "translation": translated})
-            except Exception:
-                pass
-            return translated
-    except Exception as e:
-        logger.warning(f"Translation module failed: {e}")
+    translated = local_translate_tl_to_en(text)
+    if not translated:
+        try:
+            from deep_translator import GoogleTranslator
+            translated = GoogleTranslator(source='tl', target='en').translate(text)
+        except Exception:
+            pass
+
+    if translated:
+        try:
+            await db.translation_cache.insert_one({"query": text, "translation": translated})
+        except Exception:
+            pass
+        return translated
     return ""
 
 # ==================== SYSTEM SETTINGS ====================
-
 @api_router.get("/settings/chat-limit")
 async def get_chat_limit():
     try:
@@ -313,14 +335,11 @@ async def update_chat_limit(request: ChatLimitRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==================== TRANSLATION & GENERAL DOC ROUTES ====================
-
 @api_router.get("/")
 async def root():
-    return {"message": "Legal Awareness Chat Bot"}
+    return {"message": "SHIELD Legal Awareness Chat Bot"}
 
 # ==================== LEGAL KNOWLEDGE CRUD ====================
-
 @api_router.get("/legal-knowledge")
 async def get_all_laws(q: Optional[str] = None, category: Optional[str] = None, language: Optional[str] = None):
     try:
@@ -365,6 +384,26 @@ async def add_legal_knowledge(law: LegalKnowledge, background_tasks: BackgroundT
         
         background_tasks.add_task(train_search_models)
         return {"message": "Law added successfully", "id": law_dict['id']}
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+@api_router.post("/legal-knowledge/upload")
+async def upload_legal_knowledge(background_tasks: BackgroundTasks, file: UploadFile = File(...), title: str = Form(...), category: str = Form(...), tags: str = Form(...), language: str = Form(...)):
+    try:
+        content = await file.read()
+        if file.filename.endswith('.pdf'): text_content = await extract_text_from_pdf(content)
+        elif file.filename.endswith('.txt'): text_content = content.decode('utf-8')
+        else: raise HTTPException(status_code=400, detail="Only PDF and text files are supported")
+
+        law = {
+            "id": str(uuid.uuid4()), "title": title, "category": category, "content": text_content,
+            "simplified_text": "Extracted from uploaded document.",
+            "tags": [t.strip() for t in tags.split(',') if t.strip()], "language": language,
+            "created_at": datetime.now(timezone.utc).isoformat()
+        }
+        await db.legal_knowledge.insert_one(law)
+        
+        background_tasks.add_task(train_search_models)
+        return {"message": "Legal knowledge uploaded successfully", "id": law["id"]}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 @api_router.post("/legal-knowledge/bulk-delete")
@@ -423,33 +462,27 @@ async def update_legal_knowledge(law_id: str, law: LegalKnowledge, background_ta
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 # ==================== HYBRID CHATBOT RETRIEVAL ====================
-
 @api_router.post("/chat", response_model=ChatResponse)
 async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(None), user_id: Optional[str] = Form(None)):
     try:
-        session_id = session_id or str(uuid.uuid4())
+        session_id = str(session_id) if (session_id and not hasattr(session_id, 'default')) else str(uuid.uuid4())
+        user_id = str(user_id) if (user_id and not hasattr(user_id, 'default')) else None
         
-        # --- NEW: 1,000 Word Limit Check for Chatbot ---
         if len(message.split()) > 1000:
             return ChatResponse(
                 response="Your query is too long. Please keep your question under 1,000 words.", 
                 session_id=session_id, 
                 laws=[]
             )
-        # -----------------------------------------------
             
-        # --- STEP 1: CONVERSATIONAL NOISE REDUCTION ---
         clean_message = clean_conversational_noise(message)
         message_text = clean_message.lower() if clean_message else message.lower()
             
         if not search_engine.laws or search_engine.vectorizer is None:
             return ChatResponse(response="System is initializing or no laws are available. Please try again in a moment.", session_id=session_id, laws=[])
 
-        # =========================================================
-        # STEP 0: DIRECT ARTICLE NUMBER LOOKUP
-        # =========================================================
+        # Step 0: Direct article number lookup
         article_num_match = re.search(r'\barticle\s+(\d+)\b|\bart\.?\s*(\d+)\b', message.lower())
         direct_article_number = None
         direct_article_index = None
@@ -461,7 +494,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                     direct_article_index = idx
                     break
 
-        # --- STEP 2: EXPAND PHRASES AND SYNONYMS ---
+        # Step 2: Expand synonyms
         expanded_keywords = []
         clean_text_no_punct = re.sub(r'[^\w\s]', ' ', message_text)
         raw_words = clean_text_no_punct.split()
@@ -478,8 +511,6 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                     expanded_keywords.extend(english_terms)
 
         search_text = message_text
-        
-        # --- STEP 3: RELIABLE LANGUAGE DETECTION & CACHED TRANSLATION ---
         if is_tagalog_or_taglish(search_text):
             translation = await get_or_create_translation(clean_text_no_punct)
             if translation:
@@ -488,7 +519,6 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         full_query_text = f"{search_text} {' '.join(expanded_keywords)}"
         clean_full_query = re.sub(r'[^\w\s]', '', full_query_text)
 
-        # --- STEP 4: TOKENIZATION & STOPWORDS ---
         stopwords = {
             "ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "naman", "lang", "daw", "din", "rin",
             "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "to", "for", "with", 
@@ -496,47 +526,81 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             "give", "given", "gave", "take", "took", "get", "got", "make", "made", "know", "knew", "ask", "asked", "tell", "told", "say", "said", "just", "like", "want", "went", "go", "off", "up", "down"
         }
         
+        COMPOUND_ENTITIES = [
+            ("government employees", "government_employees"),
+            ("kawani ng gobyerno", "government_employees"),
+            ("empleyado ng gobyerno", "government_employees"),
+            ("civil service", "civil_service"),
+            ("pregnant employees", "pregnant_employees"),
+            ("pregnant workers", "pregnant_employees"),
+            ("probationary employees", "probationary_employees"),
+            ("probationary employment", "probationary_employment"),
+            ("regular employment", "regular_employment"),
+            ("separation pay", "separation_pay"),
+            ("13th month pay", "13th_month_pay"),
+            ("service incentive leave", "service_incentive_leave"),
+            ("night shift differential", "night_shift_differential"),
+            ("illegal recruitment", "illegal_recruitment"),
+            ("constructive dismissal", "constructive_dismissal"),
+            ("security of tenure", "security_of_tenure")
+        ]
+        
+        detected_compounds = []
+        lower_query = full_query_text.lower()
+        for phrase, bound_token in COMPOUND_ENTITIES:
+            if phrase in lower_query:
+                detected_compounds.append(bound_token)
+
         raw_tokens = [w.lower() for w in clean_full_query.split()
                       if (len(w) > 2 or w.isdigit()) and w.lower() not in stopwords]
 
-        # --- STEP 5: EXACT MATCHES & LEVENSHTEIN FUZZY CORRECTION ---
         exact_tokens = [t for t in raw_tokens if t in search_engine.vocabulary]
         corrected_tokens = list(exact_tokens)
         unmatched = [t for t in raw_tokens if t not in search_engine.vocabulary]
         
         for t in unmatched:
-            if len(t) >= 4 and search_engine.vocabulary:
-                closest = min(search_engine.vocabulary, key=lambda v: Levenshtein.distance(t, v))
-                dist = Levenshtein.distance(t, closest)
-                if dist == 1 or (dist == 2 and len(t) >= 6):
-                    corrected_tokens.append(closest)
+            if t in TAGALOG_MARKERS or t in LEGAL_SYNONYMS:
+                corrected_tokens.append(t)
+                continue
+            if len(t) <= 5:
+                continue
+            candidates = [v for v in search_engine.vocabulary if v.startswith(t[0])]
+            if not candidates:
+                continue
+            closest = min(candidates, key=lambda v: Levenshtein.distance(t, v))
+            dist = Levenshtein.distance(t, closest)
+            if (len(t) <= 8 and dist == 1) or (len(t) >= 9 and dist <= 2):
+                corrected_tokens.append(closest)
 
-        if not corrected_tokens:
+        corrected_tokens.extend(detected_compounds)
+
+        if not corrected_tokens and direct_article_index is None:
+            if any(term in message_text for term in ["government employee", "kawani ng gobyerno", "empleyado ng gobyerno", "civil service"]):
+                return ChatResponse(
+                    response="Government employees and public sector workers are governed by the Civil Service Commission (CSC), not the Philippine Labor Code (PD 442, Art. 82 & Art. 276). Please refer to CSC guidelines for civil service employment concerns.",
+                    session_id=session_id, laws=[]
+                )
             return ChatResponse(
                 response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.",
                 session_id=session_id, laws=[]
             )
         
         query_text_for_math = " ".join(corrected_tokens)
-        
-        # --- STEP 6: EXPLOIT CACHED MODELS ---
         query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
         cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
         bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
         
-        # Normalize BM25
         bm25_array = np.array(bm25_scores)
         if len(bm25_array) > 0 and np.max(bm25_array) > 0:
             bm25_min = np.min(bm25_array)
             bm25_max = np.max(bm25_array)
             if bm25_max == bm25_min:
-                bm25_norm = np.zeros_like(bm25_array) 
+                bm25_norm = np.zeros_like(bm25_array)
             else:
                 bm25_norm = (bm25_array - bm25_min) / (bm25_max - bm25_min)
         else:
             bm25_norm = np.zeros_like(bm25_array)
 
-        # Title Boost
         title_boost = np.zeros(len(search_engine.laws))
         query_token_set = set(corrected_tokens)
         vocab_idf = getattr(search_engine, 'vocab_idf', {})
@@ -549,7 +613,6 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         tb_max = np.max(title_boost)
         title_boost_norm = title_boost / tb_max if tb_max > 0 else title_boost
 
-        # CombSUM Fusion
         final_scores = (cosine_scores * 0.35) + (bm25_norm * 0.40) + (title_boost_norm * 0.25)
         
         try:
@@ -560,7 +623,6 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         
         matched_laws = []
         
-        # --- DIRECT ARTICLE PRE-FETCH ---
         if direct_article_index is not None:
             direct_law = search_engine.laws[direct_article_index].copy()
             qs = set(corrected_tokens)
@@ -576,46 +638,22 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             direct_law['accuracy'] = "100%"
             matched_laws.append(direct_law)
 
-        # =========================================================
-        # CROSS-ENCODER RERANKING
-        # =========================================================
-        top_15_indices = np.argsort(final_scores)[::-1][:15]
-        
-        candidate_pairs = []
-        valid_candidate_indices = []
-        
-        for i in top_15_indices:
-            # Skip the directly-fetched article to prevent duplicates
+        top_indices = np.argsort(final_scores)[::-1]
+        query_match_tokens = set(corrected_tokens)
+
+        for i in top_indices:
+            if len(matched_laws) >= chat_limit:
+                break
             if direct_article_index is not None and i == direct_article_index:
                 continue
-                
-            # Only rerank documents that passed a basic threshold and contain at least one token
-            if final_scores[i] > 0.15: 
+            if final_scores[i] > 0.25: 
+                law_data = search_engine.laws[i].copy()
                 doc_words = set(search_engine.corpus[i].split())
-                if query_token_set & doc_words:
-                    candidate_pairs.append([full_query_text, search_engine.corpus[i]])
-                    valid_candidate_indices.append(i)
-
-        if candidate_pairs:
-            encoder = search_engine.get_cross_encoder()
-            ce_scores = encoder.predict(candidate_pairs)
-            best_ce_indices = np.argsort(ce_scores)[::-1]
-            
-            for idx in best_ce_indices:
-                if len(matched_laws) >= chat_limit:
-                    break
+                if not (query_match_tokens & doc_words):
+                    continue
                     
-                original_idx = valid_candidate_indices[idx]
-                law_data = search_engine.laws[original_idx].copy()
-                raw_ce_score = float(ce_scores[idx])
-                
-                # Convert logit score to UI percentage using Sigmoid function
-                ui_percentage = int((1 / (1 + math.exp(-raw_ce_score))) * 100)
-                
-                # Keep the percentage visually tied to the CombSUM floor so it doesn't look abnormally low
-                ui_percentage = max(ui_percentage, int(final_scores[original_idx] * 100))
-                
-                law_data['accuracy'] = f"{ui_percentage}%"
+                raw_percentage = int(final_scores[i] * 100)
+                law_data['accuracy'] = f"{raw_percentage}%"
                 
                 qs = set(corrected_tokens)
                 chunks = law_data.get('chunks') or []
@@ -629,9 +667,12 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                     law_data['best_match_chunk'] = law_data.get('simplified_text') or (law_data.get('content', '') or '')[:500]
                 
                 matched_laws.append(law_data)
-            
+
         if not matched_laws:
-            final_response = "I could not find any specific Philippine Labor Law matching your query. Please ensure your question is related to employment, wages, or workplace policies."
+            if any(term in message_text for term in ["government employee", "kawani ng gobyerno", "empleyado ng gobyerno", "civil service"]):
+                final_response = "Government employees and public sector workers are governed by the Civil Service Law, rules, and regulations under the Civil Service Commission (CSC), not the Philippine Labor Code (PD 442, Art. 82 & Art. 276). Please refer to CSC guidelines for public sector employment concerns."
+            else:
+                final_response = "I could not find any specific Philippine Labor Law matching your query. Please ensure your question is related to private sector employment, wages, or workplace policies."
         else:
             base_response = f"I found {len(matched_laws)} relevant articles regarding your query:"
             final_response = base_response
@@ -639,12 +680,16 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             try:
                 detected_lang = detect_language_simple(message)
                 if detected_lang in ['tl', 'unknown']:
-                    final_response = GoogleTranslator(source='en', target='tl').translate(base_response)
-                    for law in matched_laws:
-                        if law['best_match_chunk']:
-                            law['best_match_chunk'] = GoogleTranslator(source='en', target='tl').translate(law['best_match_chunk'])
+                    try:
+                        from deep_translator import GoogleTranslator
+                        final_response = GoogleTranslator(source='en', target='tl').translate(base_response)
+                        for law in matched_laws:
+                            if law.get('best_match_chunk'):
+                                law['best_match_chunk'] = GoogleTranslator(source='en', target='tl').translate(law['best_match_chunk'])
+                    except Exception:
+                        pass
             except Exception as e:
-                logger.warning(f"Output translation failed: {e}")
+                logger.warning(f"Output formatting failed: {e}")
             
         await db.chat_history.insert_one({
             "id": str(uuid.uuid4()), "session_id": session_id, "user_id": user_id, 
@@ -659,12 +704,11 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==================== AUTH & STATS ====================
-
 @api_router.get("/users")
 async def get_all_users(requester_id: str):
     requester = await db.users.find_one({"id": requester_id})
     if not requester or requester.get("role") != "super_admin":
-        raise HTTPException(status_code=403, detail="Access Denied")
+        raise HTTPException(status_code=403, detail="Access Denied: Only Super Admins can view the user list.")
     users = await db.users.find({}, {"_id": 0, "password": 0}).to_list(1000)
     return {"users": users}
 
@@ -672,13 +716,13 @@ async def get_all_users(requester_id: str):
 async def update_user_role(target_id: str, request: RoleUpdateRequest):
     requester = await db.users.find_one({"id": request.requester_id})
     if not requester or requester.get("role") != "super_admin":
-        raise HTTPException(status_code=403, detail="Access Denied")
+        raise HTTPException(status_code=403, detail="Access Denied: Only Super Admins can modify user roles.")
     if request.new_role not in ["user", "admin", "super_admin"]:
-        raise HTTPException(status_code=400, detail="Invalid role")
+        raise HTTPException(status_code=400, detail="Invalid role provided.")
     result = await db.users.update_one({"id": target_id}, {"$set": {"role": request.new_role}})
     if result.matched_count == 0:
-        raise HTTPException(status_code=404, detail="Target user not found")
-    return {"message": f"User role updated to {request.new_role}"}
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    return {"message": f"User role successfully updated to {request.new_role}"}
 
 @api_router.get("/stats")
 async def get_stats():
@@ -686,7 +730,7 @@ async def get_stats():
     laws = await db.legal_knowledge.count_documents({})
     return {"chat_sessions": sessions, "legal_articles": laws}
 
-# ==================== TEST CASE DATABASE CLOUD ROUTES ====================
+# ==================== TEST CASE CLOUD ROUTES ====================
 @api_router.get("/admin/metrics/test-cases")
 async def get_test_cases():
     cases = await db.test_cases.find({}, {"_id": 0}).to_list(1000)
@@ -712,11 +756,11 @@ async def delete_test_case(test_id: str):
 async def evaluate_search_metrics(payload: ManualEvaluationRequest, requester_id: str):
     requester = await db.users.find_one({"id": requester_id})
     if not requester or requester.get("role") not in ["admin", "super_admin"]:
-        raise HTTPException(status_code=403, detail="Access Denied")
+        raise HTTPException(status_code=403, detail="Access Denied: Only Admins can run metric evaluations.")
     if not payload.test_cases:
         raise HTTPException(status_code=400, detail="No test cases provided.")
     if search_engine.vectorizer is None or search_engine.bm25 is None:
-        raise HTTPException(status_code=400, detail="Search models not trained.")
+        raise HTTPException(status_code=400, detail="Search models are not trained yet. Add legal knowledge first.")
     try:
         limit_setting = await db.settings.find_one({"key": "chat_limit"})
         chat_limit = int(limit_setting.get("value", 3)) if limit_setting else 3

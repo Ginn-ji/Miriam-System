@@ -1,4 +1,4 @@
-import re
+﻿import re
 import numpy as np
 from pydantic import BaseModel
 from typing import List
@@ -83,7 +83,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
     recall_list = []
     rr_list = []
 
-    # Identical Stopwords from server.py
     stopwords = {
         "ang", "ng", "na", "sa", "at", "ay", "mga", "ko", "mo", "siya", "kami", "kayo", "sila", "ito", "iyan", "iyon", "ano", "sino", "bakit", "paano", "kailan", "saan", "ba", "po", "nga", "yung", "para", "kung", "pero", "kasi", "dahil", "gusto", "pwede", "naman", "lang", "daw", "din", "rin",
         "a", "an", "the", "is", "are", "was", "were", "what", "who", "how", "when", "where", "why", "can", "could", "would", "should", "do", "does", "did", "i", "me", "my", "we", "you", "your", "it", "about", "and", "or", "of", "in", "on", "to", "for", "with", 
@@ -96,7 +95,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
         clean_message = clean_conversational_noise(raw_message)
         message_text = clean_message.lower() if clean_message else raw_message.lower()
 
-        # Step 0: Direct Article Number Lookup
         article_num_match = re.search(r'\barticle\s+(\d+)\b|\bart\.?\s*(\d+)\b', raw_message.lower())
         direct_article_index = None
         if article_num_match:
@@ -108,7 +106,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
                         direct_article_index = idx
                         break
 
-        # Step 1: Synonym & Concept Expansion
         expanded_keywords = []
         clean_text_no_punct = re.sub(r'[^\w\s]', ' ', message_text)
         raw_words = clean_text_no_punct.split()
@@ -126,7 +123,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
 
         search_text = message_text
 
-        # Step 2: Language Detection & Translation
         if is_tagalog_or_taglish(search_text):
             try:
                 english_translation = GoogleTranslator(source='tl', target='en').translate(clean_text_no_punct)
@@ -138,24 +134,55 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
         full_query_text = f"{search_text} {' '.join(expanded_keywords)}"
         clean_full_query = re.sub(r'[^\w\s]', '', full_query_text)
         
-        # Step 3: Tokenization
+        COMPOUND_ENTITIES = [
+            ("government employees", "government_employees"),
+            ("kawani ng gobyerno", "government_employees"),
+            ("empleyado ng gobyerno", "government_employees"),
+            ("civil service", "civil_service"),
+            ("pregnant employees", "pregnant_employees"),
+            ("pregnant workers", "pregnant_employees"),
+            ("probationary employees", "probationary_employees"),
+            ("probationary employment", "probationary_employment"),
+            ("regular employment", "regular_employment"),
+            ("separation pay", "separation_pay"),
+            ("13th month pay", "13th_month_pay"),
+            ("service incentive leave", "service_incentive_leave"),
+            ("night shift differential", "night_shift_differential"),
+            ("illegal recruitment", "illegal_recruitment"),
+            ("constructive dismissal", "constructive_dismissal"),
+            ("security of tenure", "security_of_tenure")
+        ]
+        
+        detected_compounds = []
+        lower_query = full_query_text.lower()
+        for phrase, bound_token in COMPOUND_ENTITIES:
+            if phrase in lower_query:
+                detected_compounds.append(bound_token)
+
         raw_tokens = [w.lower() for w in clean_full_query.split()
                       if (len(w) > 2 or w.isdigit()) and w.lower() not in stopwords]
 
-        # Step 4: Vocabulary Matching & Levenshtein Correction
         exact_tokens = [t for t in raw_tokens if t in search_engine.vocabulary]
         corrected_tokens = list(exact_tokens)
         unmatched = [t for t in raw_tokens if t not in search_engine.vocabulary]
         
         for t in unmatched:
-            if len(t) >= 4 and search_engine.vocabulary:
-                closest = min(search_engine.vocabulary, key=lambda v: Levenshtein.distance(t, v))
-                dist = Levenshtein.distance(t, closest)
-                if dist == 1 or (dist == 2 and len(t) >= 6):
-                    corrected_tokens.append(closest)
+            if t in TAGALOG_MARKERS or t in LEGAL_SYNONYMS:
+                corrected_tokens.append(t)
+                continue
+            if len(t) <= 5:
+                continue
+            candidates = [v for v in search_engine.vocabulary if v.startswith(t[0])]
+            if not candidates:
+                continue
+            closest = min(candidates, key=lambda v: Levenshtein.distance(t, v))
+            dist = Levenshtein.distance(t, closest)
+            if (len(t) <= 8 and dist == 1) or (len(t) >= 9 and dist <= 2):
+                corrected_tokens.append(closest)
+
+        corrected_tokens.extend(detected_compounds)
 
         if not corrected_tokens and direct_article_index is None:
-            # Query rejected entirely
             evaluation_rows.append({
                 "test_id": item.test_id,
                 "query": item.query,
@@ -174,7 +201,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
 
         query_text_for_math = " ".join(corrected_tokens)
 
-        # Step 5: Scoring (Cosine + BM25 + IDF-Weighted Title Boost)
         query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
         cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
         bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
@@ -205,7 +231,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
 
         final_scores = (cosine_scores * 0.35) + (bm25_norm * 0.40) + (title_boost_norm * 0.25)
         
-        # Step 6: Retrieval & Filtering
         retrieved_laws = []
         if direct_article_index is not None:
             retrieved_laws.append(search_engine.laws[direct_article_index])
@@ -214,7 +239,7 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
         query_match_tokens = set(corrected_tokens)
         
         for idx in top_indices:
-            if len(retrieved_laws) >= k:  # Dynamic Top-K matching admin dashboard max results setting
+            if len(retrieved_laws) >= k:
                 break
             if direct_article_index is not None and idx == direct_article_index:
                 continue
@@ -223,7 +248,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
                 if query_match_tokens & doc_words:
                     retrieved_laws.append(search_engine.laws[idx])
         
-        # Step 7: Ground Truth Matching
         targets = [t.strip().lower() for t in item.expected_article.split(',')]
         total_expected = len(targets)
         
@@ -255,7 +279,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
                 if first_match_rank == 0:
                     first_match_rank = rank
 
-        # 8. COMPUTE FINAL METRICS
         total_k = len(retrieved_laws)
         p_at_k = (relevant_count / total_k) if total_k > 0 else 0.0
         recall = min((relevant_count / total_expected), 1.0) if total_expected > 0 else 0.0
@@ -277,7 +300,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
             "reciprocal_rank": round(rr, 3)
         })
 
-    # Macro Averages across all test cases
     macro_precision = np.mean(precision_list) if precision_list else 0.0
     macro_recall = np.mean(recall_list) if recall_list else 0.0
     f1 = (2 * macro_precision * macro_recall / (macro_precision + macro_recall)) if (macro_precision + macro_recall) > 0 else 0.0

@@ -47,3 +47,6 @@ scikit-learn
 Levenshtein
 rank-bm25
 deep-translator
+torch
+transformers
+sentencepiece
