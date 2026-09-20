@@ -69,6 +69,7 @@ class SearchEngine:
     # --- NEW: BGE-M3 Variables ---
     bge_model = None
     bge_embeddings = None
+    domain_anchor_embedding = None
 
     @classmethod
     def get_bge_model(cls):
@@ -626,29 +627,34 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         
         query_text_for_math = " ".join(corrected_tokens)
         
-        # --- NEW: BGE-M3 Dense Retrieval ---
+                # =============================================================
+        # LIGHTWEIGHT GATEKEEPER — Runs BEFORE expensive BGE encoding
+        # Uses the already-loaded TF-IDF vectorizer (microseconds).
+        # If the query has near-zero similarity with every single article,
+        # it is completely off-topic and we stop here immediately.
+        # =============================================================
+        if direct_article_index is None and search_engine.domain_anchor_embedding is not None:
+            domain_similarity = float(util.cos_sim(query_embedding, search_engine.domain_anchor_embedding))
+            logger.info(f"Domain anchor similarity: {domain_similarity:.4f}")
+            if domain_similarity < 0.40:  # tune between 0.35–0.45
+                if any(term in message_text for term in ["government employee", "kawani ng gobyerno", "empleyado ng gobyerno", "civil service"]):
+                    return ChatResponse(
+                        response="Government employees and public sector workers are governed by the Civil Service Commission (CSC), not the Philippine Labor Code (PD 442, Art. 82 & Art. 276). Please refer to CSC guidelines for civil service employment concerns.",
+                        session_id=session_id, laws=[]
+                    )
+                return ChatResponse(
+                    response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.",
+                    session_id=session_id, laws=[]
+                )
+        # =============================================================
+        # --- BGE-M3 Dense Retrieval ---
         encoder = search_engine.get_bge_model()
         query_embedding = encoder.encode(query_text_for_math, convert_to_tensor=True)
         bge_scores = util.cos_sim(query_embedding, search_engine.bge_embeddings)[0].cpu().numpy()
         
-        # Normalize BGE scores
-        if len(bge_scores) > 0 and np.max(bge_scores) > np.min(bge_scores):
-            bge_norm = (bge_scores - np.min(bge_scores)) / (np.max(bge_scores) - np.min(bge_scores) + 1e-9)
-        else:
-            bge_norm = np.zeros_like(bge_scores)
-        
         # --- BM25 Lexical Retrieval ---
         bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
         bm25_array = np.array(bm25_scores)
-        if len(bm25_array) > 0 and np.max(bm25_array) > 0:
-            bm25_min = np.min(bm25_array)
-            bm25_max = np.max(bm25_array)
-            if bm25_max == bm25_min:
-                bm25_norm = np.zeros_like(bm25_array)
-            else:
-                bm25_norm = (bm25_array - bm25_min) / (bm25_max - bm25_min)
-        else:
-            bm25_norm = np.zeros_like(bm25_array)
 
         # --- Title Boost ---
         title_boost = np.zeros(len(search_engine.laws))
@@ -660,12 +666,34 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             if matching_title_words:
                 title_boost[idx] = sum(vocab_idf.get(w, 1.0) for w in matching_title_words)
 
-        tb_max = np.max(title_boost)
-        title_boost_norm = title_boost / tb_max if tb_max > 0 else title_boost
+        # --- NEW: RECIPROCAL RANK FUSION (RRF) ---
+        # The industry standard algorithm for hybrid search (Cormack et al., 2009)
+        def calculate_rrf_scores(raw_scores, k=60):
+            ranks = np.empty_like(raw_scores)
+            # Sort descending to assign ranks (1 is best)
+            sorted_indices = np.argsort(-raw_scores)
+            ranks[sorted_indices] = np.arange(1, len(raw_scores) + 1)
+            # Only assign RRF points if the raw algorithm actually found a match (>0)
+            return np.where(raw_scores > 0, 1.0 / (k + ranks), 0.0)
 
-        # --- FINAL SCORING FUSION: 50% BGE-M3 Semantic + 30% BM25 Lexical + 20% Title Boost ---
-        final_scores = (bge_norm * 0.50) + (bm25_norm * 0.30) + (title_boost_norm * 0.20)
+        bge_rrf = calculate_rrf_scores(bge_scores)
+        bm25_rrf = calculate_rrf_scores(bm25_array)
+        title_rrf = calculate_rrf_scores(title_boost)
+
+        final_scores = bge_rrf + bm25_rrf + title_rrf
         
+        DOMAIN_THRESHOLD = 0.45  # tune between 0.38–0.45 as needed
+        best_bge_score = float(np.max(bge_scores))
+        if best_bge_score < DOMAIN_THRESHOLD and direct_article_index is None:
+            if any(term in message_text for term in ["government employee", "kawani ng gobyerno", "empleyado ng gobyerno", "civil service"]):
+                return ChatResponse(
+                    response="Government employees and public sector workers are governed by the Civil Service Commission (CSC), not the Philippine Labor Code (PD 442, Art. 82 & Art. 276). Please refer to CSC guidelines for civil service employment concerns.",
+                    session_id=session_id, laws=[]
+                )
+            return ChatResponse(
+                response="This query does not appear to be related to Philippine Labor Law. Please ask a specific workplace, employment, or labor dispute question.",
+                session_id=session_id, laws=[]
+            )
         try:
             limit_setting = await db.settings.find_one({"key": "chat_limit"})
             chat_limit = int(limit_setting.get("value", 5)) if limit_setting else 5
@@ -698,16 +726,29 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             if direct_article_index is not None and i == direct_article_index:
                 continue
             
-            # The baseline threshold is slightly higher now since BGE-M3 introduces confident baselines
-            if final_scores[i] > 0.25: 
+            # 1. Rank Gate: Must have a minimum RRF score
+            if final_scores[i] > 0.01: 
+                
+                # 2. NEW STRICT SEMANTIC GATE (Whole-Query Coherence)
+                # BGE-M3 scores range from -1.0 to 1.0. A score below 0.35 means 
+                # the overall sentence meaning does not logically match the law, 
+                # even if BM25 found random matching keywords.
+                if bge_scores[i] < 0.35:
+                    continue
+
                 law_data = search_engine.laws[i].copy()
                 
-                # Still enforce that at least one lexical/translated keyword matches to prevent pure hallucinations
+                # 3. Lexical Gate: Must still share at least one exact/translated keyword
                 doc_words = set(search_engine.corpus[i].split())
                 if not (query_match_tokens & doc_words):
                     continue
                     
-                raw_percentage = int(final_scores[i] * 100)
+                # Apply formal Min-Max Normalization against the theoretical max RRF score (0.04918)
+                theoretical_max_rrf = (1 / 61) * 3
+                min_max_scaled = (final_scores[i] / theoretical_max_rrf) * 100
+                
+                # Cap at 99% to account for AI margin of error, and format as integer
+                raw_percentage = min(int(min_max_scaled), 99)
                 law_data['accuracy'] = f"{raw_percentage}%"
                 
                 qs = set(corrected_tokens)
@@ -757,7 +798,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
     except Exception as e: 
         logger.error(f"CRITICAL CHAT ERROR: {str(e)}") 
         raise HTTPException(status_code=500, detail=str(e))
-
+        
 # ==================== AUTH & STATS ====================
 @api_router.get("/users")
 async def get_all_users(requester_id: str):

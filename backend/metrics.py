@@ -1,8 +1,9 @@
 ﻿import re
 import numpy as np
+import torch
+from sentence_transformers import util
 from pydantic import BaseModel
 from typing import List
-from sklearn.metrics.pairwise import cosine_similarity
 import Levenshtein
 from langdetect import detect
 from deep_translator import GoogleTranslator
@@ -201,21 +202,16 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
 
         query_text_for_math = " ".join(corrected_tokens)
 
-        query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
-        cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
-        bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
-        
-        bm25_array = np.array(bm25_scores)
-        if len(bm25_array) > 0 and np.max(bm25_array) > 0:
-            bm25_min = np.min(bm25_array)
-            bm25_max = np.max(bm25_array)
-            if bm25_max == bm25_min:
-                bm25_norm = np.zeros_like(bm25_array) 
-            else:
-                bm25_norm = (bm25_array - bm25_min) / (bm25_max - bm25_min)
-        else:
-            bm25_norm = np.zeros_like(bm25_array)
+        # --- BGE-M3 Dense Retrieval ---
+        encoder = search_engine.get_bge_model()
+        query_embedding = encoder.encode(query_text_for_math, convert_to_tensor=True)
+        bge_scores = util.cos_sim(query_embedding, search_engine.bge_embeddings)[0].cpu().numpy()
 
+        # --- BM25 Lexical Retrieval ---
+        bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
+        bm25_array = np.array(bm25_scores)
+
+        # --- Title Boost ---
         title_boost = np.zeros(len(search_engine.laws))
         query_token_set = set(corrected_tokens)
         vocab_idf = getattr(search_engine, 'vocab_idf', {})
@@ -226,10 +222,18 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
                 if matching_title_words:
                     title_boost[idx] = sum(vocab_idf.get(w, 1.0) for w in matching_title_words)
 
-        tb_max = np.max(title_boost)
-        title_boost_norm = title_boost / tb_max if tb_max > 0 else title_boost
+        # --- RECIPROCAL RANK FUSION (RRF) ---
+        def calculate_rrf_scores(raw_scores, k=60):
+            ranks = np.empty_like(raw_scores)
+            sorted_indices = np.argsort(-raw_scores)
+            ranks[sorted_indices] = np.arange(1, len(raw_scores) + 1)
+            return np.where(raw_scores > 0, 1.0 / (k + ranks), 0.0)
 
-        final_scores = (cosine_scores * 0.35) + (bm25_norm * 0.40) + (title_boost_norm * 0.25)
+        bge_rrf = calculate_rrf_scores(bge_scores)
+        bm25_rrf = calculate_rrf_scores(bm25_array)
+        title_rrf = calculate_rrf_scores(title_boost)
+
+        final_scores = bge_rrf + bm25_rrf + title_rrf
         
         retrieved_laws = []
         if direct_article_index is not None:
@@ -243,7 +247,8 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
                 break
             if direct_article_index is not None and idx == direct_article_index:
                 continue
-            if final_scores[idx] > 0.25: 
+            # Lowered threshold to match the RRF logic in server.py
+            if final_scores[idx] > 0.01: 
                 doc_words = set(search_engine.corpus[idx].split())
                 if query_match_tokens & doc_words:
                     retrieved_laws.append(search_engine.laws[idx])
