@@ -24,6 +24,10 @@ from rank_bm25 import BM25Okapi
 from langdetect import detect, DetectorFactory
 import math
 
+# --- NEW: BGE-M3 Imports ---
+from sentence_transformers import SentenceTransformer, util
+import torch
+
 # Import the external synonyms dictionary
 from synonyms import LEGAL_SYNONYMS
 
@@ -61,6 +65,19 @@ class SearchEngine:
     vocab_idf = {}
     bm25 = None
     highest_bm25 = 0.0
+    
+    # --- NEW: BGE-M3 Variables ---
+    bge_model = None
+    bge_embeddings = None
+
+    @classmethod
+    def get_bge_model(cls):
+        """Lazy loads the 2.2GB BGE-M3 model into memory."""
+        if cls.bge_model is None:
+            logger.info("Loading BGE-M3 Dense Model (High RAM Usage)...")
+            cls.bge_model = SentenceTransformer('BAAI/bge-m3')
+            logger.info("BGE-M3 successfully loaded!")
+        return cls.bge_model
 
 class BulkDeleteRequest(BaseModel):
     ids: List[str]
@@ -101,7 +118,7 @@ def local_translate_tl_to_en(text: str) -> str:
         return ""
 
 async def train_search_models():
-    """Fetches all laws from the database and pre-trains the TF-IDF and BM25 models in memory."""
+    """Fetches all laws from the database and pre-trains the models in memory."""
     logger.info("Training SHIELD Search Models in memory...")
     all_laws = await db.legal_knowledge.find({}, {"_id": 0}).to_list(None)
     
@@ -116,6 +133,7 @@ async def train_search_models():
         search_engine.vectorizer = None
         search_engine.tfidf_matrix = None
         search_engine.bm25 = None
+        search_engine.bge_embeddings = None
         return
 
     search_engine.laws = all_laws
@@ -167,6 +185,27 @@ async def train_search_models():
     search_engine.vocab_idf = dict(zip(search_engine.vectorizer.get_feature_names_out(), search_engine.vectorizer.idf_))
     
     search_engine.bm25 = BM25Okapi(tokenized_corpus, k1=1.2, b=0.85)
+    
+    # --- BGE-M3 Dense Encoding with Disk Caching ---
+    embeddings_cache_path = os.path.join(ROOT_DIR, "bge_embeddings.pt")
+    
+    if os.path.exists(embeddings_cache_path):
+        logger.info("Loading cached BGE-M3 embeddings from disk...")
+        search_engine.bge_embeddings = torch.load(embeddings_cache_path)
+    else:
+        logger.info("Encoding legal corpus with BGE-M3 (one-time process)...")
+        encoder = SearchEngine.get_bge_model()
+        encoder.max_seq_length = 512
+        
+        search_engine.bge_embeddings = encoder.encode(
+            corpus, 
+            batch_size=4, 
+            show_progress_bar=True, 
+            convert_to_tensor=True
+        )
+        torch.save(search_engine.bge_embeddings, embeddings_cache_path)
+        logger.info("BGE-M3 embeddings saved to disk cache at: %s", embeddings_cache_path)
+    
     logger.info("Search Models successfully trained and loaded into memory!")
 
 # ==================== MODELS ====================
@@ -479,7 +518,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         clean_message = clean_conversational_noise(message)
         message_text = clean_message.lower() if clean_message else message.lower()
             
-        if not search_engine.laws or search_engine.vectorizer is None:
+        if not search_engine.laws or search_engine.vectorizer is None or search_engine.bge_embeddings is None:
             return ChatResponse(response="System is initializing or no laws are available. Please try again in a moment.", session_id=session_id, laws=[])
 
         # Step 0: Direct article number lookup
@@ -586,10 +625,20 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
             )
         
         query_text_for_math = " ".join(corrected_tokens)
-        query_vec = search_engine.vectorizer.transform([query_text_for_math]) 
-        cosine_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
-        bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
         
+        # --- NEW: BGE-M3 Dense Retrieval ---
+        encoder = search_engine.get_bge_model()
+        query_embedding = encoder.encode(query_text_for_math, convert_to_tensor=True)
+        bge_scores = util.cos_sim(query_embedding, search_engine.bge_embeddings)[0].cpu().numpy()
+        
+        # Normalize BGE scores
+        if len(bge_scores) > 0 and np.max(bge_scores) > np.min(bge_scores):
+            bge_norm = (bge_scores - np.min(bge_scores)) / (np.max(bge_scores) - np.min(bge_scores) + 1e-9)
+        else:
+            bge_norm = np.zeros_like(bge_scores)
+        
+        # --- BM25 Lexical Retrieval ---
+        bm25_scores = search_engine.bm25.get_scores(corrected_tokens) 
         bm25_array = np.array(bm25_scores)
         if len(bm25_array) > 0 and np.max(bm25_array) > 0:
             bm25_min = np.min(bm25_array)
@@ -601,6 +650,7 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         else:
             bm25_norm = np.zeros_like(bm25_array)
 
+        # --- Title Boost ---
         title_boost = np.zeros(len(search_engine.laws))
         query_token_set = set(corrected_tokens)
         vocab_idf = getattr(search_engine, 'vocab_idf', {})
@@ -613,7 +663,8 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
         tb_max = np.max(title_boost)
         title_boost_norm = title_boost / tb_max if tb_max > 0 else title_boost
 
-        final_scores = (cosine_scores * 0.35) + (bm25_norm * 0.40) + (title_boost_norm * 0.25)
+        # --- FINAL SCORING FUSION: 50% BGE-M3 Semantic + 30% BM25 Lexical + 20% Title Boost ---
+        final_scores = (bge_norm * 0.50) + (bm25_norm * 0.30) + (title_boost_norm * 0.20)
         
         try:
             limit_setting = await db.settings.find_one({"key": "chat_limit"})
@@ -646,8 +697,12 @@ async def legal_chat(message: str = Form(...), session_id: Optional[str] = Form(
                 break
             if direct_article_index is not None and i == direct_article_index:
                 continue
+            
+            # The baseline threshold is slightly higher now since BGE-M3 introduces confident baselines
             if final_scores[i] > 0.25: 
                 law_data = search_engine.laws[i].copy()
+                
+                # Still enforce that at least one lexical/translated keyword matches to prevent pure hallucinations
                 doc_words = set(search_engine.corpus[i].split())
                 if not (query_match_tokens & doc_words):
                     continue
@@ -793,7 +848,7 @@ async def get_user_sessions(user_id: str):
 
 @api_router.get("/chat/sessions/{session_id}")
 async def get_chat_history(session_id: str):
-    messages = await db.chat_history.find({"session_id": session_id}, {"_id": 0}).sort("created_at", 1).to_list(100)
+    messages = await db.history.find({"session_id": session_id}, {"_id": 0}).sort("created_at", 1).to_list(100)
     return {"messages": messages}
 
 app.include_router(api_router)
@@ -821,7 +876,7 @@ async def startup_event():
             logger.info("Created new superadmin account.")
     
     await train_search_models()
-    logger.info("SHIELD API Started and Models Loaded")
+    logger.info("LACBot API Started and Models Loaded")
 
 @app.on_event("shutdown")
 async def shutdown_db_client(): client.close()
