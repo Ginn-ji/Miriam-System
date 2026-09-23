@@ -25,11 +25,6 @@ export const LawResultCard = ({ lawData }) => {
             {lawData.article ? `${lawData.article}: ${lawData.title}` : lawData.title}
           </h3>
         </div>
-        {lawData.accuracy && (
-          <span className={`px-2.5 py-1 rounded-full text-xs font-bold border shrink-0 ${getBadgeStyle(lawData.accuracy)}`}>
-            {lawData.accuracy} Match
-          </span>
-        )}
       </div>
       <div className="p-0">
         {lawData.best_match_chunk && (

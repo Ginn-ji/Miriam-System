@@ -8,20 +8,29 @@ import { toast } from 'sonner';
 
 const Login = ({ onLogin }) => {
   const [isRegistering, setIsRegistering] = useState(false);
+  const [registerStep, setRegisterStep] = useState(0); 
+  const [registerCode, setRegisterCode] = useState('');
+  
+  const [loginType, setLoginType] = useState('email'); 
+  const [loginIdentifier, setLoginIdentifier] = useState('');
+  
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
+  
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   
- // Disclaimer state
+  const [forgotStep, setForgotStep] = useState(0); 
+  const [resetEmail, setResetEmail] = useState('');
+  const [resetCode, setResetCode] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  
   const [showDisclaimer, setShowDisclaimer] = useState(false);
 
-  // Trigger disclaimer only if they haven't agreed before
   useEffect(() => {
     const hasAgreed = localStorage.getItem('shield_disclaimer_agreed');
-    if (!hasAgreed) {
-      setShowDisclaimer(true);
-    }
+    if (!hasAgreed) setShowDisclaimer(true);
   }, []);
 
   const handleAcceptDisclaimer = () => {
@@ -29,80 +38,128 @@ const Login = ({ onLogin }) => {
     setShowDisclaimer(false);
   };
   
+  const validatePassword = (pwd) => {
+    if (pwd.length < 8) return "Password must be at least 8 characters long.";
+    if (!/[^a-zA-Z]/.test(pwd)) return "Password must contain at least one number or special character.";
+    return null;
+  };
+
+  const getErrorMessage = (err, defaultMessage) => {
+    const detail = err.response?.data?.detail;
+    if (Array.isArray(detail)) {
+      return detail.map(e => `${e.loc[e.loc.length - 1]}: ${e.msg}`).join(', ');
+    }
+    if (typeof detail === 'string') {
+      return detail;
+    }
+    return defaultMessage;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError('');
-    setLoading(true);
-
+    
     if (isRegistering) {
+      const pwdError = validatePassword(password);
+      if (pwdError) return setError(pwdError);
+      
+      setLoading(true);
       try {
-        const payload = {
-          username: username,
-          password: password,
-          role: 'user',
-          current_user_role: 'guest'
-        };
-
-        const response = await apiClient.post('/users/register', payload);
-        toast.success('Registration successful! Logging you in...');
-        
-        onLogin({ 
-          id: response.data.id, 
-          role: response.data.role, 
-          username: response.data.username 
-        });
+        const payload = { username, email, password, role: 'user' };
+        await apiClient.post('/users/register', payload);
+        toast.success('Verification code sent to your email.');
+        setRegisterStep(1); 
       } catch (err) {
-        const detail = err.response?.data?.detail;
-        if (Array.isArray(detail)) {
-          setError(`Error: ${detail[0].loc[detail[0].loc.length - 1]} ${detail[0].msg}`); 
-        } else if (typeof detail === 'string') {
-          setError(detail);
-        } else {
-          setError('Registration failed. Please check your connection.');
-        }
+        setError(getErrorMessage(err, 'Registration request failed.'));
       }
+      setLoading(false);
     } else {
+      setLoading(true);
       try {
-        const response = await apiClient.post('/login', { username, password });
+        const payload = { login_type: loginType, identifier: loginIdentifier, password };
+        const response = await apiClient.post('/login', payload);
         onLogin(response.data);
       } catch (err) {
-        setError('Invalid username or password');
+        setError(getErrorMessage(err, 'Invalid credentials'));
       }
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyRegistration = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const response = await apiClient.post('/users/register/verify', { 
+        email: email, 
+        code: registerCode 
+      });
+      toast.success('Account verified and created successfully!');
+      onLogin({ id: response.data.id, role: response.data.role, username: response.data.username });
+    } catch (err) {
+      setError(getErrorMessage(err, 'Verification failed. Invalid code.'));
+    }
+    setLoading(false);
+  };
+
+  const handleForgotRequest = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const res = await apiClient.post('/users/forgot-password', { email: resetEmail });
+      toast.success(res.data.message);
+      setForgotStep(2);
+    } catch (err) {
+      const message = getErrorMessage(err, 'Failed to request reset.');
+      setError(message);
+      toast.error(message);
+    }
+    setLoading(false);
+  };
+
+  const handleVerifyCode = async (e) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      await apiClient.post('/users/verify-reset-code', { email: resetEmail, code: resetCode });
+      setForgotStep(3);
+    } catch (err) {
+      setError(getErrorMessage(err, 'Invalid code.'));
+    }
+    setLoading(false);
+  };
+
+  const handleResetPassword = async (e) => {
+    e.preventDefault();
+    setError('');
+    
+    const pwdError = validatePassword(newPassword);
+    if (pwdError) return setError(pwdError);
+    
+    setLoading(true);
+    try {
+      await apiClient.post('/users/reset-password', { 
+        email: resetEmail, 
+        code: resetCode, 
+        new_password: newPassword 
+      });
+      toast.success('Password reset successful. Please log in.');
+      setForgotStep(0);
+      setLoginType('email');
+      setLoginIdentifier(resetEmail);
+      setPassword('');
+    } catch (err) {
+      setError(getErrorMessage(err, 'Failed to reset password.'));
     }
     setLoading(false);
   };
 
   return (
     <div className="relative min-h-screen flex items-center justify-center bg-secondary p-4 font-manrope">
-      
-      {showDisclaimer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="bg-white p-6 rounded-md shadow-lg max-w-md w-full animate-in fade-in zoom-in duration-300">
-            <h2 className="text-xl font-serif font-bold text-destructive mb-3">
-              ⚖️ Legal Disclaimer
-            </h2>
-            <div className="text-sm text-gray-600 space-y-3 mb-6">
-              <p>
-                Welcome to LACBot. This system is an AI-assisted legal awareness tool designed strictly for academic purposes.
-              </p>
-              <p>
-                The information retrieved by this chatbot does <strong>not</strong> constitute official legal advice, nor does it establish an attorney-client relationship. While we strive for accuracy, AI models may misinterpret complex legal nuances.
-              </p>
-              <p>
-                Always consult with a qualified legal professional or the Department of Labor and Employment (DOLE) for binding, official guidance.
-              </p>
-            </div>
-            <button
-              onClick={handleAcceptDisclaimer}
-              className="w-full py-2 bg-primary text-white rounded-sm font-medium hover:bg-primary/90 transition-colors"
-            >
-              I Understand and Agree
-            </button>
-          </div>
-        </div>
-      )}
 
-      {/* Main Login UI */}
       <Card className="w-full max-w-md shadow-lg border-t-4 border-t-primary">
         <CardHeader className="text-center space-y-1">
           <div className="flex justify-center mb-2">
@@ -112,77 +169,104 @@ const Login = ({ onLogin }) => {
           </div>
           <CardTitle className="text-3xl font-serif font-bold text-primary"> LACBot </CardTitle>
           <CardDescription className="text-sm text-muted-foreground">
-            {isRegistering ? "Create your account" : "Legal Awareness Chat Bot"}
+            {forgotStep > 0 ? "Account Recovery" : (isRegistering ? "Create your account" : "Legal Awareness Chat Bot")}
           </CardDescription>
         </CardHeader>
+        
         <CardContent className="space-y-4 pt-4">
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <Input 
-              type="text" 
-              placeholder="Username" 
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-            />
-            <Input 
-              type="password" 
-              placeholder="Password" 
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-            {error && <p className="text-red-500 text-sm text-center">{error}</p>}
-            
-            <Button type="submit" className="w-full h-12 text-base" disabled={loading}>
-              {isRegistering ? "Sign Up" : "Login"}
-            </Button>
-          </form>
+          
+          {isRegistering && registerStep === 1 ? (
+             <form onSubmit={handleVerifyRegistration} className="space-y-4">
+              <p className="text-sm text-center text-muted-foreground">Enter the 6-digit code sent to <strong>{email}</strong>.</p>
+              <Input type="text" placeholder="123456" maxLength={6} value={registerCode} onChange={(e) => setRegisterCode(e.target.value)} required className="text-center tracking-widest text-lg" />
+              {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+              <Button type="submit" className="w-full h-12" disabled={loading}>Verify & Create Account</Button>
+              <Button type="button" variant="ghost" className="w-full" onClick={() => setRegisterStep(0)}>Back</Button>
+            </form>
+          ) : forgotStep === 0 ? (
+            <form onSubmit={handleSubmit} className="space-y-4">
+              
+              {isRegistering ? (
+                  <>
+                    <Input type="text" placeholder="Username" value={username} onChange={(e) => setUsername(e.target.value)} required />
+                    <Input type="email" placeholder="Registered Email Address" value={email} onChange={(e) => setEmail(e.target.value)} required />
+                  </>
+                ) : (
+                  <Input 
+                    type="email"
+                    placeholder="Email Address"
+                    value={loginIdentifier} 
+                    onChange={(e) => setLoginIdentifier(e.target.value)} 
+                    required 
+                  />
+                )}
+              
+              <Input type="password" placeholder="Password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+              
+              {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+              
+              {!isRegistering && (
+                <div className="text-right">
+                  <button type="button" onClick={() => { setForgotStep(1); setError(''); }} className="text-xs text-primary hover:underline">
+                    Forgot Password?
+                  </button>
+                </div>
+              )}
 
-          {!isRegistering && (
+              <Button type="submit" className="w-full h-12 text-base" disabled={loading}>
+                {isRegistering ? "Send Verification Code" : "Login"}
+              </Button>
+            </form>
+          ) : forgotStep === 1 ? (
+            <form onSubmit={handleForgotRequest} className="space-y-4">
+              <Input type="email" placeholder="Enter Registered Email Address" value={resetEmail} onChange={(e) => setResetEmail(e.target.value)} required />
+              {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+              <Button type="submit" className="w-full h-12" disabled={loading}>Send Verification Code</Button>
+              <Button type="button" variant="ghost" className="w-full" onClick={() => setForgotStep(0)}>Cancel</Button>
+            </form>
+          ) : forgotStep === 2 ? (
+            <form onSubmit={handleVerifyCode} className="space-y-4">
+              <p className="text-sm text-center text-muted-foreground">Enter the 6-digit code sent to your email.</p>
+              <Input type="text" placeholder="123456" maxLength={6} value={resetCode} onChange={(e) => setResetCode(e.target.value)} required className="text-center tracking-widest text-lg" />
+              {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+              <Button type="submit" className="w-full h-12" disabled={loading}>Verify Code</Button>
+              <Button type="button" variant="ghost" className="w-full" onClick={() => setForgotStep(0)}>Cancel</Button>
+            </form>
+          ) : (
+            <form onSubmit={handleResetPassword} className="space-y-4">
+              <p className="text-sm text-center text-muted-foreground">Password must be at least 8 characters with a number or special character.</p>
+              <Input type="password" placeholder="New Password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
+              {error && <p className="text-red-500 text-sm text-center">{error}</p>}
+              <Button type="submit" className="w-full h-12" disabled={loading}>Reset Password</Button>
+            </form>
+          )}
+
+          {forgotStep === 0 && !isRegistering && (
             <>
               <div className="relative my-4">
-                <div className="absolute inset-0 flex items-center">
-                  <span className="w-full border-t" />
-                </div>
-                <div className="relative flex justify-center text-xs  uppercase">
+                <div className="absolute inset-0 flex items-center"><span className="w-full border-t" /></div>
+                <div className="relative flex justify-center text-xs uppercase">
                   <span className="bg-card px-2 text-muted-foreground">Or access without account</span>
                 </div>
               </div>
-
-              <Button 
-                variant="outline" 
-                className="w-full flex items-center gap-3 h-12 text-base justify-center hover:bg-muted"
-                onClick={() => onLogin({ id: 'g1', role: 'guest', username: 'Guest' })}
-              >
-                <UserCircle className="h-5 w-5 text-muted-foreground" />
-                Continue as Guest
+              <Button variant="outline" className="w-full flex items-center gap-3 h-12 text-base justify-center hover:bg-muted" onClick={() => onLogin({ id: 'g1', role: 'guest', username: 'Guest' })}>
+                <UserCircle className="h-5 w-5 text-muted-foreground" /> Continue as Guest
               </Button>
             </>
           )}
 
-          <div className="mt-4 pt-4 border-t text-center">
-            <Button 
-              variant="ghost" 
-              className="w-full text-sm text-muted-foreground"
-              onClick={() => {
-                setIsRegistering(!isRegistering);
-                setError('');
-              }}
-            >
-              {isRegistering ? (
-                "Already have an account? Log in"
-              ) : (
-                <div className="flex items-center gap-2">
-                  <UserPlus className="h-4 w-4" />
-                  Don't have an account? Register here
-                </div>
-              )}
-            </Button>
-          </div>
-          
-          <p className="text-[10px] text-center text-muted-foreground mt-6 italic">
-            By continuing, you acknowledge that this AI system provides legal awareness and is not a substitute for professional legal advice. There is strictly no attorney to client relationship, this is only an advanced search engine about Philippine Labor Code.
-          </p>
+          {forgotStep === 0 && (
+            <div className="mt-4 pt-4 border-t text-center">
+              <Button variant="ghost" className="w-full text-sm text-muted-foreground" onClick={() => { 
+                setIsRegistering(!isRegistering); 
+                setError(''); 
+                setPassword(''); 
+                setRegisterStep(0); 
+              }}>
+                {isRegistering ? "Already have an account? Log in" : <div className="flex items-center gap-2"><UserPlus className="h-4 w-4" /> Don't have an account? Register here</div>}
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

@@ -77,6 +77,12 @@ def is_tagalog_or_taglish(text: str) -> bool:
     except Exception:
         return False
 
+def calculate_rrf_scores(raw_scores, k=60):
+    ranks = np.empty_like(raw_scores)
+    sorted_indices = np.argsort(-raw_scores)
+    ranks[sorted_indices] = np.arange(1, len(raw_scores) + 1)
+    return np.where(raw_scores > 0, 1.0 / (k + ranks), 0.0)
+
 # --- Core Logic ---
 def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int = 3):
     evaluation_rows = []
@@ -90,6 +96,10 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
         "he", "she", "him", "his", "her", "they", "them", "their", "this", "that", "these", "those", "be", "been", "being", "has", "have", "had", "by", "from", "as", "not", "no", "any", "all", "such", "shall", "may", "will", "upon", "under", "which", "whom", "other", "out", "into", "same", "some",
         "give", "given", "gave", "take", "took", "get", "got", "make", "made", "know", "knew", "ask", "asked", "tell", "told", "say", "said", "just", "like", "want", "went", "go", "off", "up", "down"
     }
+
+    # PHASE 1: PREPROCESS ALL QUERIES
+    processed_data = []
+    valid_queries_for_bge = []
 
     for item in test_cases:
         raw_message = item.query.strip()
@@ -123,7 +133,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
                     expanded_keywords.extend(english_terms)
 
         search_text = message_text
-
         if is_tagalog_or_taglish(search_text):
             try:
                 english_translation = GoogleTranslator(source='tl', target='en').translate(clean_text_no_punct)
@@ -184,6 +193,38 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
         corrected_tokens.extend(detected_compounds)
 
         if not corrected_tokens and direct_article_index is None:
+            processed_data.append({
+                "is_valid": False,
+                "item": item
+            })
+        else:
+            query_text_for_math = " ".join(corrected_tokens)
+            processed_data.append({
+                "is_valid": True,
+                "item": item,
+                "corrected_tokens": corrected_tokens,
+                "direct_article_index": direct_article_index
+            })
+            valid_queries_for_bge.append(query_text_for_math)
+
+    # PHASE 2: BATCH ENCODE WITH BGE-M3
+    all_embeddings = []
+    if valid_queries_for_bge:
+        encoder = search_engine.get_bge_model()
+        # Process all text through PyTorch in a single fast batch
+        all_embeddings = encoder.encode(
+            valid_queries_for_bge, 
+            batch_size=16, 
+            convert_to_tensor=True, 
+            show_progress_bar=False
+        )
+
+    # PHASE 3: SCORING & EVALUATION LOOP
+    embedding_idx = 0
+    for data in processed_data:
+        item = data["item"]
+        
+        if not data["is_valid"]:
             evaluation_rows.append({
                 "test_id": item.test_id,
                 "query": item.query,
@@ -200,11 +241,12 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
             rr_list.append(0.0)
             continue
 
-        query_text_for_math = " ".join(corrected_tokens)
+        corrected_tokens = data["corrected_tokens"]
+        direct_article_index = data["direct_article_index"]
 
-        # --- BGE-M3 Dense Retrieval ---
-        encoder = search_engine.get_bge_model()
-        query_embedding = encoder.encode(query_text_for_math, convert_to_tensor=True)
+        # --- BGE-M3 Dense Retrieval (From Cache) ---
+        query_embedding = all_embeddings[embedding_idx].unsqueeze(0)
+        embedding_idx += 1
         bge_scores = util.cos_sim(query_embedding, search_engine.bge_embeddings)[0].cpu().numpy()
 
         # --- BM25 Lexical Retrieval ---
@@ -223,12 +265,6 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
                     title_boost[idx] = sum(vocab_idf.get(w, 1.0) for w in matching_title_words)
 
         # --- RECIPROCAL RANK FUSION (RRF) ---
-        def calculate_rrf_scores(raw_scores, k=60):
-            ranks = np.empty_like(raw_scores)
-            sorted_indices = np.argsort(-raw_scores)
-            ranks[sorted_indices] = np.arange(1, len(raw_scores) + 1)
-            return np.where(raw_scores > 0, 1.0 / (k + ranks), 0.0)
-
         bge_rrf = calculate_rrf_scores(bge_scores)
         bm25_rrf = calculate_rrf_scores(bm25_array)
         title_rrf = calculate_rrf_scores(title_boost)
@@ -247,8 +283,14 @@ def calculate_ir_metrics(search_engine, test_cases: List[TestCaseItem], k: int =
                 break
             if direct_article_index is not None and idx == direct_article_index:
                 continue
-            # Lowered threshold to match the RRF logic in server.py
+                
+            # Rank Gate
             if final_scores[idx] > 0.01: 
+                # Strict Semantic Gate (Added to match server.py structure)
+                if bge_scores[idx] < 0.35:
+                    continue
+                    
+                # Lexical Gate
                 doc_words = set(search_engine.corpus[idx].split())
                 if query_match_tokens & doc_words:
                     retrieved_laws.append(search_engine.laws[idx])
