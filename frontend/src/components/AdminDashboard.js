@@ -232,34 +232,38 @@ const MetricsEvaluationControl = ({ currentUser }) => {
   const [fetching, setFetching] = useState(true);
 
   useEffect(() => {
-    const fetchTestCases = async () => {
-      try {
-        const response = await apiClient.get('/admin/metrics/test-cases');
-        const normalized = (response.data.test_cases || []).map((tc, i) => ({
-          ...tc,
-          _backendId: tc.test_id,
-          test_id: `T${i + 1}`,
-        }));
-        setTestCases(normalized);
-      } catch (err) {
-        toast.error("Failed to load test cases from database.");
-      } finally {
-        setFetching(false);
-      }
-    };
     fetchTestCases();
   }, []);
+
+  const fetchTestCases = async () => {
+    try {
+      const response = await apiClient.get('/admin/metrics/test-cases');
+      // Keep the real backend test_id as-is — it's the only thing ever sent
+      // back to the server (delete, evaluate). The "#" row number shown in
+      // the table is purely cosmetic and computed at render time instead,
+      // so it can never be confused with — or accidentally overwrite — a
+      // real identifier.
+      setTestCases(response.data.test_cases || []);
+    } catch (err) {
+      toast.error("Failed to load test cases from database.");
+    } finally {
+      setFetching(false);
+    }
+  };
 
   const handleAddTestCase = async (e) => {
     e.preventDefault();
     if (!draft.query || !draft.expected_article) return toast.error('Please provide both a query and the expected article');
-    const nextId = `T${testCases.length + 1}`;
+    // A random id here avoids collisions entirely — deriving it from
+    // testCases.length meant two different real records could both end up
+    // with the same id as items were added and removed over time.
+    const nextId = `T-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
     const payload = { test_id: nextId, query: draft.query, expected_article: draft.expected_article };
     try {
       await apiClient.post('/admin/metrics/test-cases', payload);
-      setTestCases([...testCases, { ...payload, _backendId: nextId }]);
       setDraft(emptyDraft);
       toast.success('Test case saved to cloud database.');
+      await fetchTestCases(); 
     } catch (err) {
       toast.error(err.response?.data?.detail || 'Failed to save test case.');
     }
@@ -267,13 +271,18 @@ const MetricsEvaluationControl = ({ currentUser }) => {
 
   const handleRemoveTestCase = async (tc) => {
     try {
-      await apiClient.delete(`/admin/metrics/test-cases/${tc._backendId || tc.test_id}`);
-      const remaining  = testCases.filter((t) => t.test_id !== tc.test_id);
-      const renumbered = remaining.map((t, i) => ({ ...t, test_id: `T${i + 1}` }));
-      setTestCases(renumbered);
+      await apiClient.delete(`/admin/metrics/test-cases/${tc.test_id}`);
       toast.success('Test case removed.');
+      await fetchTestCases();   // always trust the server's copy after a mutation
     } catch (err) {
-      toast.error('Failed to delete test case.');
+      if (err.response?.status === 404) {
+        // Already gone server-side (stale local state) — resync instead of
+        // leaving a ghost row the user can never successfully delete.
+        toast.error('That test case was already removed. Refreshing the list.');
+        await fetchTestCases();
+      } else {
+        toast.error('Failed to delete test case.');
+      }
     }
   };
 
@@ -325,9 +334,9 @@ const MetricsEvaluationControl = ({ currentUser }) => {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {testCases.map((tc) => (
+              {testCases.map((tc, i) => (
                 <tr key={tc.test_id} className="hover:bg-gray-50">
-                  <td className="p-3 font-semibold">{tc.test_id}</td>
+                  <td className="p-3 font-semibold">{i + 1}</td>
                   <td className="p-3">{tc.query}</td>
                   <td className="p-3">{tc.expected_article}</td>
                   <td className="p-3 text-right">
