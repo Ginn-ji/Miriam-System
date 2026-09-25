@@ -40,7 +40,7 @@ export const Dashboard = ({ user }) => {
         const sessionsRes = await apiClient.get(`/chat/sessions?user_id=${user.id}`);
         const sessions = sessionsRes.data.sessions || [];
         userChatCount = sessions.length;
-        setRecentSessions(sessions.slice(0, 3));
+        setRecentSessions(sessions.slice(0, 1));
       }
 
       setStats({

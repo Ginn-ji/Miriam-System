@@ -8,29 +8,39 @@ import apiClient from '../api/apiClient';
 import { toast } from 'sonner';
 
 export const LawResultCard = ({ lawData }) => {
-  const getBadgeStyle = (accuracyString) => {
-    const score = parseInt(accuracyString?.replace('%', '') || '0', 10);
-    if (score >= 75) {
-      return "bg-emerald-100 text-emerald-800 border-emerald-200"; 
-    }
-    return "bg-amber-100 text-amber-800 border-amber-200"; 
+  // ── Relevance badge colour based on score ──────────────────
+  const pct = lawData?.relevance_pct ?? null;
+  const getBadgeStyle = (score) => {
+    if (score === null) return null;
+    if (score >= 75) return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
+    if (score >= 50) return 'bg-amber-100  text-amber-800  border border-amber-200';
+    return                    'bg-red-100    text-red-800    border border-red-200';
   };
+  const badgeStyle = getBadgeStyle(pct);
+  // ──────────────────────────────────────────────────────────
 
   return (
     <Card className="mt-4 mb-2 shadow-sm border border-gray-200 overflow-hidden w-full text-left bg-white">
       <div className="p-4 border-b bg-gray-50 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-1 min-w-0">
           <BookOpen className="h-5 w-5 text-primary shrink-0" />
-          <h3 className="font-serif font-bold text-lg text-gray-900">
+          <h3 className="font-serif font-bold text-lg text-gray-900 truncate">
             {lawData.article ? `${lawData.article}: ${lawData.title}` : lawData.title}
           </h3>
         </div>
+        {/* ── Relevance percentage badge ── */}
+        {pct !== null && badgeStyle && (
+          <span className={`shrink-0 text-xs font-bold px-2.5 py-1 rounded-full ${badgeStyle}`}>
+            {pct}% Relevance
+          </span>
+        )}
       </div>
+
       <div className="p-0">
         {lawData.best_match_chunk && (
           <div className="p-4">
             <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Relevant Section:</p>
-            <div className="pl-3 border-l-4 border-gray-200 italic text-gray-500 text-sm">
+            <div className="pl-3 border-l-4 border-gray-200 italic text-gray-900 text-base">
               "{lawData.best_match_chunk}"
             </div>
           </div>
@@ -40,8 +50,10 @@ export const LawResultCard = ({ lawData }) => {
             <span>View Full Article</span>
             <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
           </summary>
-          <div className="p-4 pt-2 text-sm text-gray-600 whitespace-pre-wrap bg-gray-50/50 leading-relaxed border-t border-gray-100">
-            {lawData.chunks ? (Array.isArray(lawData.chunks) ? lawData.chunks.join('\n\n') : lawData.chunks) : 'Full text not available.'}
+          <div className="p-4 pt-2 text-base text-gray-900 whitespace-pre-wrap bg-gray-50/50 leading-relaxed border-t border-gray-100">
+            {lawData.chunks
+              ? (Array.isArray(lawData.chunks) ? lawData.chunks.join('\n\n') : lawData.chunks)
+              : 'Full text not available.'}
           </div>
         </details>
       </div>
@@ -52,40 +64,35 @@ export const LawResultCard = ({ lawData }) => {
 export const LegalChat = ({ user }) => {
   const { t } = useLanguage();
   const [messages, setMessages] = useState([]);
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [input, setInput]       = useState('');
+  const [loading, setLoading]   = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const messagesEndRef = useRef(null);
 
-  useEffect(() => {
-    setSessionId(`session_${Date.now()}`);
-  }, []);
-
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  useEffect(() => { setSessionId(`session_${Date.now()}`); }, []);
+  useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
     const userMessage = { role: 'user', content: input };
     setMessages((prev) => [...prev, userMessage]);
-    
+
     const formData = new FormData();
     formData.append("message", input);
     formData.append("session_id", sessionId);
     if (user && user.role !== 'guest') formData.append("user_id", user.id);
-    
+
     setInput('');
     setLoading(true);
-    
+
     try {
       const response = await apiClient.post('/chat', formData, {
         headers: { 'Content-Type': 'multipart/form-data' }
       });
-      setMessages((prev) => [...prev, { 
-        role: 'assistant', 
+      setMessages((prev) => [...prev, {
+        role: 'assistant',
         content: response.data.response,
-        laws: response.data.laws 
+        laws: response.data.laws
       }]);
     } catch (error) {
       toast.error('Failed to get response');
@@ -98,8 +105,8 @@ export const LegalChat = ({ user }) => {
   return (
     <div className="flex flex-col h-full min-h-[calc(100vh-120px)]">
       <div className="mb-4">
-        <h1 className="text-4xl font-serif font-bold tracking-tight text-primary">Labor Law Retrieval</h1>
-        <p className="text-muted-foreground mt-1">Ask LACBot questions related to Philippine Labor Law</p>
+        <h1 className="text-4xl font-serif font-bold tracking-tight text-primary">Labor Code Retrieval</h1>
+        <p className="text-muted-foreground mt-1">Ask LACBot questions related to Philippine Labor Code</p>
       </div>
 
       <Card className="flex-1 flex flex-col shadow-lg overflow-hidden border-gray-200 mb-2">
@@ -108,13 +115,13 @@ export const LegalChat = ({ user }) => {
             <Bot className="h-5 w-5 text-primary" /> LACBot Assistant
           </CardTitle>
         </CardHeader>
-        
+
         <CardContent className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50">
           {messages.map((msg, idx) => (
             <div key={idx} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
               <div className={`max-w-[90%] ${msg.role === 'user' ? 'w-fit bg-[#1e293b] text-white px-4 py-3 rounded-2xl rounded-tr-none shadow-sm' : 'w-full'}`}>
                 {msg.role === 'assistant' ? (
-                   <p className="text-sm text-gray-800 leading-relaxed mb-2">{msg.content}</p>
+                  <p className="text-sm text-gray-800 leading-relaxed mb-2">{msg.content}</p>
                 ) : (
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 )}
@@ -129,17 +136,12 @@ export const LegalChat = ({ user }) => {
 
         <div className="border-t p-4 bg-white">
           <div className="flex gap-2 items-center">
-            <Textarea 
-              value={input} 
-              onChange={(e) => setInput(e.target.value)} 
-              placeholder="Type your question about Labor Law..." 
-              className="min-h-[60px] max-h-[120px] resize-none focus-visible:ring-primary flex-1" 
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleSend();
-                }
-              }}
+            <Textarea
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              placeholder="Type your question about Labor Law..."
+              className="min-h-[60px] max-h-[120px] resize-none focus-visible:ring-primary flex-1"
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
             />
             <Button onClick={handleSend} disabled={loading || !input.trim()} className="px-6 h-[60px] shadow-sm">
               <Send className="h-5 w-5" />

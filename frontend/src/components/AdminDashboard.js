@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent } from './ui/card';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
-import { Settings, Users, ShieldAlert, ShieldCheck, ShieldPlus, Gauge, Trash2 } from 'lucide-react';
+import { Settings, Users, ShieldAlert, ShieldCheck, ShieldPlus, Gauge, Trash2, ClipboardList } from 'lucide-react';
 import apiClient from '../api/apiClient';
 import { toast } from 'sonner';
 
@@ -65,11 +65,11 @@ const AdminSettingsControl = () => {
 
 // ==================== 2. USER MANAGEMENT ====================
 const UserManagementControl = ({ currentUser }) => {
-  const [userList, setUserList] = useState([]);
+  const [userList, setUserList]       = useState([]);
   const [registerStep, setRegisterStep] = useState(0);
-  const [newAccount, setNewAccount] = useState({ username: '', email: '', password: '', role: 'admin' });
+  const [newAccount, setNewAccount]   = useState({ username: '', email: '', password: '', role: 'admin' });
   const [registerCode, setRegisterCode] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading]         = useState(false);
   const isSuperAdmin = currentUser?.role === 'super_admin';
 
   const fetchUsers = async () => {
@@ -224,11 +224,10 @@ const UserManagementControl = ({ currentUser }) => {
 
 // ==================== 3. METRICS EVALUATION ====================
 const MetricsEvaluationControl = ({ currentUser }) => {
-  // ── No test_id in draft anymore — auto-assigned ────────────
   const emptyDraft = { query: '', expected_article: '' };
-  const [draft, setDraft] = useState(emptyDraft);
+  const [draft, setDraft]       = useState(emptyDraft);
   const [testCases, setTestCases] = useState([]);
-  const [results, setResults] = useState(null);
+  const [results, setResults]   = useState(null);
   const [isRunning, setIsRunning] = useState(false);
   const [fetching, setFetching] = useState(true);
 
@@ -236,10 +235,9 @@ const MetricsEvaluationControl = ({ currentUser }) => {
     const fetchTestCases = async () => {
       try {
         const response = await apiClient.get('/admin/metrics/test-cases');
-        // Normalize IDs to T1, T2... on load regardless of stored IDs
         const normalized = (response.data.test_cases || []).map((tc, i) => ({
           ...tc,
-          _backendId: tc.test_id, // keep original for deletion
+          _backendId: tc.test_id,
           test_id: `T${i + 1}`,
         }));
         setTestCases(normalized);
@@ -255,7 +253,6 @@ const MetricsEvaluationControl = ({ currentUser }) => {
   const handleAddTestCase = async (e) => {
     e.preventDefault();
     if (!draft.query || !draft.expected_article) return toast.error('Please provide both a query and the expected article');
-    // Auto-assign next sequential ID
     const nextId = `T${testCases.length + 1}`;
     const payload = { test_id: nextId, query: draft.query, expected_article: draft.expected_article };
     try {
@@ -270,14 +267,9 @@ const MetricsEvaluationControl = ({ currentUser }) => {
 
   const handleRemoveTestCase = async (tc) => {
     try {
-      // Delete using backend ID
       await apiClient.delete(`/admin/metrics/test-cases/${tc._backendId || tc.test_id}`);
-      // Remove from local array and renumber sequentially
-      const remaining = testCases.filter((t) => t.test_id !== tc.test_id);
-      const renumbered = remaining.map((t, i) => ({
-        ...t,
-        test_id: `T${i + 1}`,
-      }));
+      const remaining  = testCases.filter((t) => t.test_id !== tc.test_id);
+      const renumbered = remaining.map((t, i) => ({ ...t, test_id: `T${i + 1}` }));
       setTestCases(renumbered);
       toast.success('Test case removed.');
     } catch (err) {
@@ -316,74 +308,49 @@ const MetricsEvaluationControl = ({ currentUser }) => {
           </div>
         </div>
 
-        {/* ── Form — no Test ID field ── */}
         <form onSubmit={handleAddTestCase} className="flex gap-2 mb-6">
-          <input
-            type="text"
-            placeholder="Query"
-            value={draft.query}
-            onChange={(e) => setDraft({...draft, query: e.target.value})}
-            className="metrics-input-wide"
-            required
-          />
-          <input
-            type="text"
-            placeholder="Expected Article"
-            value={draft.expected_article}
-            onChange={(e) => setDraft({...draft, expected_article: e.target.value})}
-            className="metrics-input-wide"
-            required
-          />
-          <button type="submit" className="metrics-btn-dark">+ Add</button>
+          <input type="text" placeholder="Query" value={draft.query} onChange={(e) => setDraft({...draft, query: e.target.value})} className="flex-[2] border p-2 text-sm rounded-sm" required />
+          <input type="text" placeholder="Expected Article" value={draft.expected_article} onChange={(e) => setDraft({...draft, expected_article: e.target.value})} className="flex-[2] border p-2 text-sm rounded-sm" required />
+          <button type="submit" className="bg-[#1e293b] text-white px-4 py-2 text-sm font-medium">+ Add</button>
         </form>
 
-        <div className="metrics-table-wrap">
-          <table className="metrics-table">
-            <thead className="metrics-thead">
+        <div className="border rounded-sm overflow-hidden mb-4">
+          <table className="w-full text-left text-sm">
+            <thead className="bg-gray-100 text-gray-600 text-xs uppercase font-bold border-b">
               <tr>
-                <th className="metrics-th w-16">#</th>
-                <th className="metrics-th">Query</th>
-                <th className="metrics-th">Expected Article</th>
-                <th className="metrics-th text-right">Remove</th>
+                <th className="p-3 w-16">#</th>
+                <th className="p-3">Query</th>
+                <th className="p-3">Expected Article</th>
+                <th className="p-3 text-right">Remove</th>
               </tr>
             </thead>
             <tbody className="divide-y">
               {testCases.map((tc) => (
-                <tr key={tc.test_id} className="metrics-tr">
-                  <td className="metrics-td-bold">{tc.test_id}</td>
-                  <td className="metrics-td">{tc.query}</td>
-                  <td className="metrics-td">{tc.expected_article}</td>
-                  <td className="metrics-td text-right">
-                    <button
-                      type="button"
-                      onClick={() => handleRemoveTestCase(tc)}
-                      className="metrics-btn-remove"
-                    >
+                <tr key={tc.test_id} className="hover:bg-gray-50">
+                  <td className="p-3 font-semibold">{tc.test_id}</td>
+                  <td className="p-3">{tc.query}</td>
+                  <td className="p-3">{tc.expected_article}</td>
+                  <td className="p-3 text-right">
+                    <button type="button" onClick={() => handleRemoveTestCase(tc)} className="text-red-500 hover:text-red-700">
                       <Trash2 className="h-4 w-4 inline" />
                     </button>
                   </td>
                 </tr>
               ))}
               {testCases.length === 0 && (
-                <tr>
-                  <td colSpan="4" className="p-4 text-center text-gray-500 italic">No test cases configured.</td>
-                </tr>
+                <tr><td colSpan="4" className="p-4 text-center text-gray-500 italic">No test cases configured.</td></tr>
               )}
             </tbody>
           </table>
         </div>
 
-        <button
-          onClick={handleRunEvaluation}
-          disabled={isRunning || testCases.length === 0}
-          className="metrics-btn-execute"
-        >
+        <button onClick={handleRunEvaluation} disabled={isRunning || testCases.length === 0} className="bg-[#1e293b] text-white px-6 py-2 text-sm font-bold rounded-sm mb-6 disabled:opacity-50">
           {isRunning ? 'Running...' : 'Run Evaluation'}
         </button>
 
         {results && (
           <div className="metrics-results">
-            <div className="metrics-summary-grid">
+            <div className="summary-grid">
               {[
                 ['Precision', results.summary.macro_precision],
                 ['Recall', results.summary.macro_recall],
@@ -391,42 +358,116 @@ const MetricsEvaluationControl = ({ currentUser }) => {
                 ['MRR', results.summary.mrr],
                 ['Tested', results.summary.total_tested],
               ].map(([label, value]) => (
-                <div key={label} className="metrics-summary-card">
-                  <p className="metrics-summary-label">{label}</p>
-                  <p className="metrics-summary-value">{value}</p>
+                <div key={label} className="summary-tile border p-4 text-center bg-white rounded-sm">
+                  <p className="text-xs text-gray-500 uppercase">{label}</p>
+                  <p className="text-xl font-bold mt-1 text-slate-800">{value}</p>
                 </div>
               ))}
             </div>
-            <div className="metrics-result-wrap">
-              <table className="metrics-table">
-                <thead className="metrics-thead">
+            <div className="table-wrap-tall mt-4 border rounded-sm overflow-x-auto">
+              <table className="w-full text-xs text-left">
+                <thead className="bg-gray-100 text-gray-600 uppercase border-b">
                   <tr>
-                    <th className="metrics-th">ID</th>
-                    <th className="metrics-th">Query</th>
-                    <th className="metrics-th">Ground Truth</th>
-                    <th className="metrics-th">Retrieved (top 3)</th>
-                    <th className="metrics-th">Relevant?</th>
-                    <th className="metrics-th">Hit Rank</th>
+                    <th className="p-3">ID</th>
+                    <th className="p-3">Query</th>
+                    <th className="p-3">Ground Truth</th>
+                    <th className="p-3">Retrieved (top 3)</th>
+                    <th className="p-3">Relevant?</th>
+                    <th className="p-3">Hit Rank</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y">
                   {results.results_matrix.map((row) => (
-                    <tr key={row.test_id} className="metrics-tr">
-                      <td className="metrics-td-bold">{row.test_id}</td>
-                      <td className="metrics-td">{row.query}</td>
-                      <td className="metrics-td">{row.ground_truth}</td>
-                      <td className="metrics-td">{row.retrieved_laws.join(', ') || '—'}</td>
-                      <td className="metrics-td font-medium">
-                        <span className={row.is_relevant.includes('0/') ? 'text-red-500' : 'text-emerald-600'}>
-                          {row.is_relevant}
-                        </span>
+                    <tr key={row.test_id} className="hover:bg-gray-50">
+                      <td className="p-3 font-semibold">{row.test_id}</td>
+                      <td className="p-3">{row.query}</td>
+                      <td className="p-3">{row.ground_truth}</td>
+                      <td className="p-3">{row.retrieved_laws.join(', ') || '—'}</td>
+                      <td className="p-3 font-medium">
+                        <span className={row.is_relevant.includes('0/') ? 'text-red-500' : 'text-emerald-600'}>{row.is_relevant}</span>
                       </td>
-                      <td className="metrics-td">{row.hit_rank}</td>
+                      <td className="p-3">{row.hit_rank}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+};
+
+// ==================== 4. ACTIVITY LOG ====================
+const ActivityLogControl = () => {
+  const [logs, setLogs]       = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const fetchLogs = async () => {
+      try {
+        const res = await apiClient.get('/admin/activity-log');
+        setLogs(res.data.logs || []);
+      } catch (_) { /* non-critical */ }
+      finally { setLoading(false); }
+    };
+    fetchLogs();
+  }, []);
+
+  const actionColor = (action = '') => {
+    if (action.startsWith('ADD'))    return 'text-emerald-700 bg-emerald-50 border border-emerald-200';
+    if (action.startsWith('EDIT'))   return 'text-amber-700 bg-amber-50 border border-amber-200';
+    if (action.startsWith('DELETE')) return 'text-red-700 bg-red-50 border border-red-200';
+    return 'text-slate-700 bg-slate-50 border border-slate-200';
+  };
+
+  return (
+    <Card className="metrics-card">
+      <CardContent className="pt-6">
+        <div className="panel-header mb-4">
+          {/* ✅ Using ClipboardList icon — no conflict with browser History API */}
+          <ClipboardList className="icon-5 text-primary" />
+          <div>
+            <h3 className="panel-title">Article Change Log</h3>
+            <p className="settings-desc">Record of who added, edited, or deleted Labor Code articles.</p>
+          </div>
+        </div>
+
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading log...</p>
+        ) : logs.length === 0 ? (
+          <p className="text-sm text-muted-foreground italic">No activity recorded yet.</p>
+        ) : (
+          <div className="border rounded-sm overflow-hidden">
+            <table className="w-full text-left text-sm">
+              <thead className="bg-gray-100 text-gray-600 text-xs uppercase font-bold border-b">
+                <tr>
+                  <th className="p-3">Admin</th>
+                  <th className="p-3">Action</th>
+                  <th className="p-3">Article</th>
+                  <th className="p-3 whitespace-nowrap">Date & Time</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {logs.map((log, idx) => (
+                  <tr key={idx} className="hover:bg-gray-50">
+                    <td className="p-3 font-medium">{log.admin_username}</td>
+                    <td className="p-3">
+                      <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${actionColor(log.action)}`}>
+                        {log.action}
+                      </span>
+                    </td>
+                    <td className="p-3 text-gray-700 max-w-[200px] truncate" title={log.article_title}>
+                      {log.article_title}
+                    </td>
+                    <td className="p-3 text-xs text-muted-foreground whitespace-nowrap">
+                      {new Date(log.timestamp).toLocaleString()}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </CardContent>
@@ -447,6 +488,7 @@ export const AdminDashboard = ({ user }) => {
       <AdminSettingsControl />
       <UserManagementControl currentUser={user} />
       <MetricsEvaluationControl currentUser={user} />
+      <ActivityLogControl />
     </div>
   );
 };
