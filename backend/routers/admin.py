@@ -52,8 +52,6 @@ async def delete_test_case(test_id: str):
         raise HTTPException(status_code=404, detail="Test case not found.")
     return {"message": "Test case deleted."}
 
-import asyncio   # add at top of admin.py
-
 @router.post("/admin/metrics/evaluate")
 async def evaluate_search_metrics(payload: ManualEvaluationRequest, requester_id: str):
     requester = await db.users.find_one({"id": requester_id})
@@ -69,9 +67,14 @@ async def evaluate_search_metrics(payload: ManualEvaluationRequest, requester_id
     except:
         chat_limit = 3
 
-    # ── Run the heavy sync calculation in a thread so FastAPI stays responsive ──
-    result = await asyncio.to_thread(
-        calculate_ir_metrics, search_engine, payload.test_cases, chat_limit
+    # calculate_ir_metrics is async (it awaits db.translation_cache lookups
+    # internally, same as chat.py's Tagalog handling) so it must be awaited
+    # directly on the event loop — it can no longer be run via asyncio.to_thread,
+    # since to_thread only executes plain synchronous callables. Calling an
+    # async def through to_thread just returns an un-awaited coroutine object,
+    # which is what caused the "coroutine object is not iterable" 500 error.
+    result = await calculate_ir_metrics(
+        search_engine, payload.test_cases, db, k=chat_limit
     )
     return result
 

@@ -7,20 +7,23 @@ import { Send, Bot, BookOpen, ChevronDown } from 'lucide-react';
 import apiClient from '../api/apiClient';
 import { toast } from 'sonner';
 
+// ── Law Result Card ──────────────────────────────────────────────────────────
 export const LawResultCard = ({ lawData }) => {
-  // ── Relevance badge colour based on score ──────────────────
-  const pct = lawData?.relevance_pct ?? null;
-  const getBadgeStyle = (score) => {
-    if (score === null) return null;
-    if (score >= 75) return 'bg-emerald-100 text-emerald-800 border border-emerald-200';
-    if (score >= 50) return 'bg-amber-100  text-amber-800  border border-amber-200';
-    return                    'bg-red-100    text-red-800    border border-red-200';
-  };
-  const badgeStyle = getBadgeStyle(pct);
-  // ──────────────────────────────────────────────────────────
+  const accuracyStr = lawData?.accuracy ?? null;
+  const pct = accuracyStr ? parseInt(accuracyStr.replace('%', ''), 10) : null;
+
+  const badgeClass = pct === null
+    ? null
+    : pct >= 75
+      ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+      : pct >= 50
+        ? 'bg-amber-100 text-amber-800 border border-amber-200'
+        : 'bg-red-100 text-red-800 border border-red-200';
 
   return (
     <Card className="mt-4 mb-2 shadow-sm border border-gray-200 overflow-hidden w-full text-left bg-white">
+
+      {/* Header: title + accuracy badge */}
       <div className="p-4 border-b bg-gray-50 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 flex-1 min-w-0">
           <BookOpen className="h-5 w-5 text-primary shrink-0" />
@@ -28,29 +31,33 @@ export const LawResultCard = ({ lawData }) => {
             {lawData.article ? `${lawData.article}: ${lawData.title}` : lawData.title}
           </h3>
         </div>
-        {/* ── Relevance percentage badge ── */}
-        {pct !== null && badgeStyle && (
-          <span className={`shrink-0 text-xs font-bold px-2.5 py-1 rounded-full ${badgeStyle}`}>
-            {pct}% Relevance
+        {pct !== null && badgeClass && (
+          <span className={`shrink-0 text-xs font-bold px-2.5 py-1 rounded-full ${badgeClass}`}>
+            {accuracyStr} Match
           </span>
         )}
       </div>
 
+      {/* Best matching chunk */}
       <div className="p-0">
         {lawData.best_match_chunk && (
           <div className="p-4">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">Relevant Section:</p>
-            <div className="pl-3 border-l-4 border-gray-200 italic text-gray-900 text-base">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 mb-1">
+              Relevant Section:
+            </p>
+            <div className="pl-3 border-l-4 border-gray-200 italic text-gray-900 text-base leading-relaxed">
               "{lawData.best_match_chunk}"
             </div>
           </div>
         )}
+
+        {/* Full article collapsible */}
         <details className="group border-t border-gray-100">
           <summary className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 text-xs font-semibold text-gray-500 uppercase tracking-widest list-none">
             <span>View Full Article</span>
             <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
           </summary>
-          <div className="p-4 pt-2 text-base text-gray-900 whitespace-pre-wrap bg-gray-50/50 leading-relaxed border-t border-gray-100">
+          <div className="p-4 pt-2 text-sm text-gray-600 whitespace-pre-wrap bg-gray-50/50 leading-relaxed border-t border-gray-100">
             {lawData.chunks
               ? (Array.isArray(lawData.chunks) ? lawData.chunks.join('\n\n') : lawData.chunks)
               : 'Full text not available.'}
@@ -61,11 +68,12 @@ export const LawResultCard = ({ lawData }) => {
   );
 };
 
+// ── Legal Chat Component ─────────────────────────────────────────────────────
 export const LegalChat = ({ user }) => {
   const { t } = useLanguage();
-  const [messages, setMessages] = useState([]);
-  const [input, setInput]       = useState('');
-  const [loading, setLoading]   = useState(false);
+  const [messages,  setMessages]  = useState([]);
+  const [input,     setInput]     = useState('');
+  const [loading,   setLoading]   = useState(false);
   const [sessionId, setSessionId] = useState(null);
   const messagesEndRef = useRef(null);
 
@@ -74,29 +82,32 @@ export const LegalChat = ({ user }) => {
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
-    const userMessage = { role: 'user', content: input };
-    setMessages((prev) => [...prev, userMessage]);
+
+    setMessages(prev => [...prev, { role: 'user', content: input }]);
 
     const formData = new FormData();
-    formData.append("message", input);
-    formData.append("session_id", sessionId);
-    if (user && user.role !== 'guest') formData.append("user_id", user.id);
+    formData.append('message',    input);
+    formData.append('session_id', sessionId);
+    if (user && user.role !== 'guest') formData.append('user_id', user.id);
 
     setInput('');
     setLoading(true);
 
     try {
       const response = await apiClient.post('/chat', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setMessages((prev) => [...prev, {
-        role: 'assistant',
+      setMessages(prev => [...prev, {
+        role:    'assistant',
         content: response.data.response,
-        laws: response.data.laws
+        laws:    response.data.laws,
       }]);
     } catch (error) {
       toast.error('Failed to get response');
-      setMessages((prev) => [...prev, { role: 'assistant', content: 'Error: Could not connect to the server.' }]);
+      setMessages(prev => [...prev, {
+        role:    'assistant',
+        content: 'Error: Could not connect to the server.',
+      }]);
     } finally {
       setLoading(false);
     }
@@ -105,8 +116,12 @@ export const LegalChat = ({ user }) => {
   return (
     <div className="flex flex-col h-full min-h-[calc(100vh-120px)]">
       <div className="mb-4">
-        <h1 className="text-4xl font-serif font-bold tracking-tight text-primary">Labor Code Retrieval</h1>
-        <p className="text-muted-foreground mt-1">Ask LACBot questions related to Philippine Labor Code</p>
+        <h1 className="text-4xl font-serif font-bold tracking-tight text-primary">
+          Labor Code Retrieval
+        </h1>
+        <p className="text-muted-foreground mt-1">
+          Ask LACBot questions related to Philippine Labor Code
+        </p>
       </div>
 
       <Card className="flex-1 flex flex-col shadow-lg overflow-hidden border-gray-200 mb-2">
@@ -118,14 +133,21 @@ export const LegalChat = ({ user }) => {
 
         <CardContent className="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50">
           {messages.map((msg, idx) => (
-            <div key={idx} className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div className={`max-w-[90%] ${msg.role === 'user' ? 'w-fit bg-[#1e293b] text-white px-4 py-3 rounded-2xl rounded-tr-none shadow-sm' : 'w-full'}`}>
+            <div
+              key={idx}
+              className={`flex w-full ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
+            >
+              <div className={`max-w-[90%] ${
+                msg.role === 'user'
+                  ? 'w-fit bg-[#1e293b] text-white px-4 py-3 rounded-2xl rounded-tr-none shadow-sm'
+                  : 'w-full'
+              }`}>
                 {msg.role === 'assistant' ? (
-                  <p className="text-sm text-gray-800 leading-relaxed mb-2">{msg.content}</p>
+                  <p className="text-sm text-slate-900 leading-relaxed mb-2">{msg.content}</p>
                 ) : (
                   <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                 )}
-                {msg.role === 'assistant' && msg.laws && msg.laws.map((law, i) => (
+                {msg.role === 'assistant' && msg.laws?.map((law, i) => (
                   <LawResultCard key={i} lawData={law} />
                 ))}
               </div>
@@ -138,12 +160,18 @@ export const LegalChat = ({ user }) => {
           <div className="flex gap-2 items-center">
             <Textarea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="Type your question about Labor Law..."
+              onChange={e => setInput(e.target.value)}
+              placeholder="Type your question about Labor Code..."
               className="min-h-[60px] max-h-[120px] resize-none focus-visible:ring-primary flex-1"
-              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); }
+              }}
             />
-            <Button onClick={handleSend} disabled={loading || !input.trim()} className="px-6 h-[60px] shadow-sm">
+            <Button
+              onClick={handleSend}
+              disabled={loading || !input.trim()}
+              className="px-6 h-[60px] shadow-sm"
+            >
               <Send className="h-5 w-5" />
             </Button>
           </div>

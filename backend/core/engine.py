@@ -7,6 +7,7 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
 from database import db
+from core.retrieval import build_vocab_index
 
 logger = logging.getLogger(__name__)
 ROOT_DIR = Path(__file__).parent.parent  # backend/ (this file lives in backend/core/)
@@ -18,6 +19,7 @@ class SearchEngine:
     article_numbers = []       
     tokenized_corpus = []
     vocabulary = set()
+    vocab_by_letter = {}
     vectorizer = None
     tfidf_matrix = None
     vocab_idf = {}
@@ -63,6 +65,7 @@ async def train_search_models():
         tokenized_corpus.append([w for w in clean_doc.split() if w not in stopwords and len(w) > 1])
         
     search_engine.vocabulary = set([w for doc in tokenized_corpus for w in doc if w not in stopwords and (len(w) > 2 or w.isdigit())])
+    search_engine.vocab_by_letter = build_vocab_index(search_engine.vocabulary)
     search_engine.corpus, search_engine.title_corpus = corpus, title_corpus
     search_engine.article_numbers, search_engine.tokenized_corpus = article_numbers, tokenized_corpus
     
