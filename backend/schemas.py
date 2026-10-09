@@ -43,7 +43,7 @@ class LegalKnowledge(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     article: Optional[str] = None
     title: str
-    category: str = "Labor Law"
+    category: str = "Book I"
     simplified_text: Optional[str] = None 
     chunks: Optional[Union[List[str], str]] = None
     content: Optional[str] = None 

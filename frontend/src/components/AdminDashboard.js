@@ -386,9 +386,9 @@ const MetricsEvaluationControl = ({ currentUser }) => {
                   </tr>
                 </thead>
                 <tbody className="divide-y">
-                  {results.results_matrix.map((row) => (
+                  {results.results_matrix.map((row, i) => (
                     <tr key={row.test_id} className="hover:bg-gray-50">
-                      <td className="p-3 font-semibold">{row.test_id}</td>
+                      <td className="p-3 font-semibold">{i + 1}</td>
                       <td className="p-3">{row.query}</td>
                       <td className="p-3">{row.ground_truth}</td>
                       <td className="p-3">{row.retrieved_laws.join(', ') || '—'}</td>

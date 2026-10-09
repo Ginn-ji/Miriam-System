@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, BackgroundTasks
 from typing import Optional
 import uuid
+import re
 from datetime import datetime, timezone
 from database import db
 from schemas import LegalKnowledge, BulkDeleteRequest
@@ -19,23 +20,20 @@ async def get_laws(
     match_query = {}
 
     if category and category.lower() != 'all':
-        match_query['category'] = category
+        # Case-insensitive exact match — handles any capitalisation differences
+        match_query['category'] = {"$regex": f"^{re.escape(category)}$", "$options": "i"}
 
     if q and q.strip():
         match_query["$or"] = [
-            {"title":   {"$regex": q.strip(), "$options": "i"}},
-            {"article": {"$regex": q.strip(), "$options": "i"}},
+            {"title":   {"$regex": re.escape(q.strip()), "$options": "i"}},
+            {"article": {"$regex": q.strip(),             "$options": "i"}},
         ]
 
-    # Total count for pagination
     total = await db.legal_knowledge.count_documents(match_query)
 
-    # Aggregation pipeline with NUMERIC sort on the article number
-    # e.g. "Art. 2" sorts before "Art. 10" (string sort would fail here)
     pipeline = [
         {"$match": match_query},
         {
-            # Extract the first integer found in the 'article' field for sorting
             "$addFields": {
                 "_sort_num": {
                     "$let": {
@@ -51,17 +49,17 @@ async def get_laws(
                             "$cond": {
                                 "if":   {"$gt": ["$$m", None]},
                                 "then": {"$toInt": "$$m.match"},
-                                "else": 999999      # articles with no number go last
+                                "else": 999999
                             }
                         }
                     }
                 }
             }
         },
-        {"$sort":    {"_sort_num": 1}},   # ← true numeric ascending order
+        {"$sort":    {"_sort_num": 1}},
         {"$skip":    skip},
         {"$limit":   limit},
-        {"$project": {"_id": 0, "_sort_num": 0}}   # strip the temp field
+        {"$project": {"_id": 0, "_sort_num": 0}}
     ]
 
     laws = await db.legal_knowledge.aggregate(pipeline).to_list(limit)
@@ -71,6 +69,7 @@ async def get_laws(
         l['content'] = "\n\n".join(l.get('chunks', [])) if l.get('chunks') else l.get('simplified_text', 'No content')
 
     return {"laws": laws, "total": total}
+
 
 @router.post("")
 async def add_law(law: LegalKnowledge, bg: BackgroundTasks):
