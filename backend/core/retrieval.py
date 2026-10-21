@@ -1,22 +1,7 @@
-"""
-core/retrieval.py
-
-Single source of truth for the Labor Code retrieval logic.
-
-Both chat.py (live user queries) and metrics.py (offline evaluation) call into
-this module for the actual query-processing and scoring math, so the two can
-never silently drift apart again. Each file only owns what's specific to its
-own job:
-  - chat.py:    encodes one query at a time, builds best_match_chunk/accuracy%,
-                saves chat history.
-  - metrics.py: batches + caches BGE embeddings across many test cases for
-                speed, then compares retrieved articles against ground truth
-                to compute precision/recall/MRR. None of that changes here —
-                it just stops duplicating the retrieval math.
-"""
 import re
 import numpy as np
 import Levenshtein
+from sklearn.metrics.pairwise import cosine_similarity
 
 from synonyms import LEGAL_SYNONYMS
 from core.nlp_utils import clean_conversational_noise, is_tagalog_or_taglish, strip_filipino_affixes
@@ -26,7 +11,7 @@ STOPWORDS = {
     "ito","iyan","iyon","ano","sino","bakit","paano","kailan","saan","ba","po",
     "nga","yung","para","kung","pero","kasi","dahil","gusto","pwede","naman",
     "lang","daw","din","rin","a","an","the","is","are","was","were","what","who",
-    "how","when","where","why","can","could","would","should","do","does","did",
+    "how","where","why","can","could","would","should","do","does","did",
     "i","me","my","we","you","your","it","about","and","or","of","in","on","to",
     "for","with","he","she","him","his","her","they","them","their","this","that",
     "these","those","be","been","being","has","have","had","by","from","as","not",
@@ -36,17 +21,15 @@ STOPWORDS = {
     "just","like","want","went","go","off","up","down",
 }
 
-# Theoretical max RRF: all 3 channels (BGE-M3 + BM25 + Title Boost) ranked #1
-# = 3 × (1/61) = 0.04918 — same constant the old server.py used
-THEORETICAL_MAX_RRF = (1.0 / 61.0) * 3.0
+THEORETICAL_MAX_RRF = (1.0 / 61.0) * 4.0
 
-# BGE-M3 domain-relevance gate: top score must reach this for the query to be
-# considered "about Labor Law" at all (unless it's a direct article lookup)
 DOMAIN_GATE_THRESHOLD = 0.45
 # BGE-M3 per-document semantic threshold (gate 2)
 BGE_GATE_THRESHOLD = 0.35
 # Minimum meaningful RRF fusion score (gate 1)
 RRF_GATE_THRESHOLD = 0.01
+# Stage 1 (raw-query BGE-M3): how many top-scoring documents are kept as candidate pool
+RAW_BGE_CANDIDATE_POOL = 30
 
 
 def rrf(raw: np.ndarray, k: int = 60) -> np.ndarray:
@@ -57,8 +40,6 @@ def rrf(raw: np.ndarray, k: int = 60) -> np.ndarray:
 
 
 def build_vocab_index(vocabulary: set) -> dict:
-    """First-letter -> [words] index, so spell-correction candidate lookup
-    doesn't rescan the whole vocabulary for every unmatched token."""
     index: dict = {}
     for word in vocabulary:
         if word:
@@ -80,19 +61,6 @@ def find_direct_article_index(raw_message: str, search_engine):
 
 
 async def build_query_tokens(raw_message: str, search_engine, db, vocab_by_letter: dict) -> dict:
-    """
-    Full text-processing pipeline: conversational-noise cleaning -> direct
-    article lookup -> Tagalog/Taglish cached-translation lookup -> synonym
-    expansion -> tokenization -> spell correction.
-
-    Returns:
-        {
-            "message_text":      cleaned/lowercased query text,
-            "dir_idx":           direct article index or None,
-            "corrected_tokens":  final token list used for scoring,
-            "query_text":        " ".join(corrected_tokens), ready to encode,
-        }
-    """
     clean_message = clean_conversational_noise(raw_message)
     message_text = clean_message.lower() if clean_message else raw_message.lower()
 
@@ -105,20 +73,29 @@ async def build_query_tokens(raw_message: str, search_engine, db, vocab_by_lette
         if cached:
             search_text += f" {cached.get('translation', '')}"
 
-    # Synonym expansion
+    # Synonym expansion (with deduplication)
     expanded_keywords: list = []
+    seen_expanded = set()
     clean_text_no_punct = re.sub(r'[^\w\s]', ' ', search_text)
     raw_words = clean_text_no_punct.split()
     stemmed_words = [strip_filipino_affixes(w) for w in raw_words]
     all_candidate_words = set(raw_words + stemmed_words)
+    
     for term, english_terms in LEGAL_SYNONYMS.items():
         tl = term.lower()
+        matched = False
         if " " in tl:
             if tl in search_text or tl in clean_text_no_punct:
-                expanded_keywords.extend(english_terms)
+                matched = True
         else:
             if tl in all_candidate_words:
-                expanded_keywords.extend(english_terms)
+                matched = True
+        
+        if matched:
+            for eng in english_terms:
+                if eng not in seen_expanded:
+                    seen_expanded.add(eng)
+                    expanded_keywords.append(eng)
 
     # Token extraction & spell correction
     full_query_text = f"{search_text} {' '.join(expanded_keywords)}"
@@ -142,44 +119,48 @@ async def build_query_tokens(raw_message: str, search_engine, db, vocab_by_lette
         if (len(t) <= 8 and dist == 1) or (len(t) >= 9 and dist <= 2):
             corrected_tokens.append(closest)
 
+    # Deduplicate corrected tokens while preserving order
+    seen_tokens = set()
+    unique_corrected_tokens = []
+    for t in corrected_tokens:
+        if t not in seen_tokens:
+            seen_tokens.add(t)
+            unique_corrected_tokens.append(t)
+
     return {
         "message_text": message_text,
         "dir_idx": dir_idx,
-        "corrected_tokens": corrected_tokens,
-        "query_text": " ".join(corrected_tokens),
+        "corrected_tokens": unique_corrected_tokens,
+        "query_text": " ".join(unique_corrected_tokens),
     }
 
 
 def score_and_gate(search_engine, corrected_tokens: list, dir_idx, bge_scores: np.ndarray) -> dict:
-    """
-    Given a precomputed bge_scores array (query vs. search_engine.bge_embeddings),
-    runs BM25 + title-boost scoring, RRF fusion, the domain gate, and the 3
-    per-document gates. Identical math for both chat.py and metrics.py.
+    total_laws = len(search_engine.laws)
 
-    Deliberately does NOT cap the number of results here: the caller is the
-    one who knows whether a direct-article-number hit already occupies a slot
-    (chat.py/metrics.py both add that first, separately), so each caller does
-    its own `if len(results) >= limit: break` while consuming ranked_indices —
-    capping in both places at once would double-count that slot.
+    # 1. BM25 Lexical Retrieval (using preprocessed tokens)
+    if search_engine.bm25 is not None and corrected_tokens:
+        bm25_scores = np.array(search_engine.bm25.get_scores(corrected_tokens))
+    else:
+        bm25_scores = np.zeros(total_laws)
 
-    Returns:
-        {
-            "bm25_scores":         np.ndarray,
-            "final_scores":        np.ndarray (RRF-fused),
-            "domain_gate_passed":  bool,
-            "ranked_indices":      [int, ...] gated + ranked, excludes dir_idx,
-        }
-    """
-    bm25_scores = np.array(search_engine.bm25.get_scores(corrected_tokens))
+    # 2. TF-IDF Dense Cosine Similarity (using preprocessed query text)
+    tfidf_scores = np.zeros(total_laws)
+    if search_engine.vectorizer is not None and search_engine.tfidf_matrix is not None and corrected_tokens:
+        query_text = " ".join(corrected_tokens)
+        query_vec = search_engine.vectorizer.transform([query_text])
+        tfidf_scores = cosine_similarity(query_vec, search_engine.tfidf_matrix).flatten()
 
-    title_boost = np.zeros(len(search_engine.laws))
+    # 3. Title IDF Boost (using preprocessed tokens)
+    title_boost = np.zeros(total_laws)
     q_set = set(corrected_tokens)
     for i, t_text in enumerate(search_engine.title_corpus):
         matching = q_set & set(t_text.split())
         if matching:
             title_boost[i] = sum(search_engine.vocab_idf.get(w, 1.0) for w in matching)
 
-    final_scores = rrf(bge_scores) + rrf(bm25_scores) + rrf(title_boost)
+    # 4. Reciprocal Rank Fusion: BGE-M3 (raw) + BM25 (preprocessed) + TF-IDF (preprocessed) + Title Boost
+    final_scores = rrf(bge_scores) + rrf(bm25_scores) + rrf(tfidf_scores) + rrf(title_boost)
 
     domain_gate_passed = float(np.max(bge_scores)) >= DOMAIN_GATE_THRESHOLD or dir_idx is not None
 
@@ -200,7 +181,31 @@ def score_and_gate(search_engine, corrected_tokens: list, dir_idx, bge_scores: n
 
     return {
         "bm25_scores": bm25_scores,
+        "tfidf_scores": tfidf_scores,
         "final_scores": final_scores,
         "domain_gate_passed": domain_gate_passed,
         "ranked_indices": ranked_indices,
     }
+
+
+def raw_bge_stage1(raw_scores: np.ndarray, dir_idx, pool: int = RAW_BGE_CANDIDATE_POOL) -> dict:
+    domain_gate_passed = float(np.max(raw_scores)) >= DOMAIN_GATE_THRESHOLD or dir_idx is not None
+
+    candidates: list = []
+    if domain_gate_passed:
+        for idx in np.argsort(-raw_scores):
+            if raw_scores[idx] < BGE_GATE_THRESHOLD:
+                break  # sorted descending, so everything after is lower too
+            candidates.append(int(idx))
+            if len(candidates) >= pool:
+                break
+
+    return {
+        "domain_gate_passed": domain_gate_passed,
+        "candidate_indices": candidates,
+    }
+
+
+def restrict_to_candidates(ranked_indices: list, candidate_indices: list) -> list:
+    allowed = set(candidate_indices)
+    return [i for i in ranked_indices if i in allowed]

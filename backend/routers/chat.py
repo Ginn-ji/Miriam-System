@@ -65,6 +65,17 @@ async def legal_chat(
         translated_query = tokens["query_text"]  # Capturing the normalized/translated query
         q_set            = set(corr_tokens)
 
+        # ── TERMINAL LOGGING / DISPLAY ───────────────────────────────────────
+        print("\n" + "=" * 65, flush=True)
+        print(f"RAW USER QUERY:         {message}", flush=True)
+        print(f"TRANSLATED / PROCESSED:  {translated_query}", flush=True)
+        print(f"CORRECTED TOKENS:       {corr_tokens}", flush=True)
+        if dir_idx is not None:
+            print(f"🎯 DIRECT ARTICLE HIT:     Index {dir_idx} ({search_engine.laws[dir_idx].get('article')})", flush=True)
+        print("=" * 65 + "\n", flush=True)
+        logger.info(f"Translated query: '{translated_query}' (Raw: '{message}')")
+        # ─────────────────────────────────────────────────────────────────────
+
         if not corr_tokens and dir_idx is None:
             if any(t in msg_text for t in ["government employee", "kawani ng gobyerno", "civil service"]):
                 return ChatResponse(
@@ -247,7 +258,7 @@ async def get_latest_feedback(user_id: Optional[str] = None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PER-ARTICLE FEEDBACK (Supporting LegalChat_2.js)
+# PER-ARTICLE FEEDBACK
 # ─────────────────────────────────────────────────────────────────────────────
 
 class ArticleFeedbackRequest(BaseModel):
