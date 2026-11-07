@@ -163,6 +163,160 @@ const ArticleFeedback = ({ lawData, messageId, user, sessionId }) => {
   );
 };
 
+// ── "How was my query processed?" — word-by-word breakdown ──────────────────
+// Why a word was left out of the processed query (codes come from the backend).
+const LEFT_OUT_REASONS = [
+  { code: 'stopword',       text: 'Common filler words. They don’t help find a law.' },
+  { code: 'too_short',      text: 'Too short to be meaningful.' },
+  { code: 'not_in_vocab',   text: 'Not found anywhere in the Labor Code text.' },
+  { code: 'no_close_match', text: 'Not found in the Labor Code text, and no close spelling match.' },
+  { code: 'translated',     text: 'Tagalog words, replaced by their English translation (shown beside the word).' },
+];
+
+const WORD_CHIP = 'px-1.5 py-0.5 rounded border text-[11px]';
+
+const QueryBreakdown = ({ messageId }) => {
+  const [trace,   setTrace]   = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [failed,  setFailed]  = useState(false);
+
+  const load = async () => {
+    if (trace || loading) return;
+    setLoading(true);
+    setFailed(false);
+    try {
+      const res = await apiClient.get(`/chat/trace/${messageId}`);
+      setTrace(res.data);
+    } catch (error) {
+      setFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const words    = trace?.words || [];
+  const phrases  = trace?.phrases || [];
+  const fillers  = trace?.fillers_removed || [];
+  const leftOut  = LEFT_OUT_REASONS
+    .map(r => ({ ...r, items: words.filter(w => w.status === 'dropped' && w.reason === r.code).map(w => w.word) }))
+    .filter(r => r.items.length > 0);
+
+  const renderWord = (w, i) => {
+    const hasTranslation = w.translations && w.translations.length > 0;
+
+    // Tagalog word replaced by English terms: show them right beside the word
+    if (w.reason === 'translated') {
+      return (
+        <span key={i} className={`${WORD_CHIP} bg-sky-50 border-sky-200 text-sky-800`}>
+          {w.word} <span className="text-sky-500">→</span> <span className="font-semibold">{w.translations.join(', ')}</span>
+        </span>
+      );
+    }
+
+    const chipTone =
+      w.status === 'kept'      ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+      : w.status === 'corrected' ? 'bg-amber-50 border-amber-200 text-amber-800'
+      : 'bg-slate-100 border-slate-200 text-slate-400 line-through';
+
+    return (
+      <span key={i} className="inline-flex items-center gap-1">
+        <span className={`${WORD_CHIP} ${chipTone}`}>
+          {w.status === 'corrected' ? `${w.word} → ${w.corrected_to}` : w.word}
+        </span>
+        {hasTranslation && (
+          <span className={`${WORD_CHIP} bg-sky-50 border-sky-200 text-sky-800`}>
+            <span className="text-sky-500">→</span> <span className="font-semibold">{w.translations.join(', ')}</span>
+          </span>
+        )}
+      </span>
+    );
+  };
+
+  return (
+    <details
+      className="group mt-2"
+      onToggle={(e) => { if (e.currentTarget.open) load(); }}
+    >
+      <summary className="flex items-center gap-1 cursor-pointer text-slate-500 hover:text-slate-700 font-medium list-none">
+        <ChevronDown className="h-3 w-3 transition-transform -rotate-90 group-open:rotate-0" />
+        How was my query processed?
+      </summary>
+
+      <div className="mt-2 p-3 bg-white border border-slate-200 rounded-lg space-y-3">
+        {loading && <p className="text-slate-400">Loading...</p>}
+        {failed && <p className="text-slate-400">Breakdown isn’t available for this message.</p>}
+
+        {trace && (
+          <>
+            {/* Your words, in order, with translations beside them */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                Your query, word by word
+              </p>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {words.map(renderWord)}
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1.5">
+                Green: used in the search · Gray, struck through: left out · Blue: replaced by its English translation
+              </p>
+            </div>
+
+            {/* Whole-phrase translations */}
+            {phrases.length > 0 && (
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                  Phrase translations
+                </p>
+                <div className="space-y-1">
+                  {phrases.map((p, i) => (
+                    <p key={i} className="text-slate-700">
+                      “{p.phrase}” <span className="text-sky-500">→</span>{' '}
+                      <span className="font-semibold text-sky-800">{p.english.join(', ')}</span>
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Full-sentence translation, when one was cached */}
+            {trace.cached_translation && (
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                  Full translation
+                </p>
+                <p className="text-slate-700 italic">“{trace.cached_translation}”</p>
+              </div>
+            )}
+
+            {/* Why words were left out */}
+            {(leftOut.length > 0 || fillers.length > 0) && (
+              <div>
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">
+                  Why some words were left out
+                </p>
+                <div className="space-y-1.5">
+                  {fillers.length > 0 && (
+                    <p className="text-slate-700">
+                      <span className="font-semibold">{fillers.map(f => `“${f}”`).join(', ')}</span>
+                      <span className="text-slate-500"> — conversational phrases, removed before searching.</span>
+                    </p>
+                  )}
+                  {leftOut.map(r => (
+                    <p key={r.code} className="text-slate-700">
+                      <span className="font-semibold">{r.items.join(', ')}</span>
+                      <span className="text-slate-500"> — {r.text}</span>
+                    </p>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </details>
+  );
+};
+
 // ── Law Result Card ──────────────────────────────────────────────────────────
 // Feedback is opt-in (showFeedback). Other screens that reuse this card,
 // such as the chat history, don't pass it, so they show no feedback controls.
@@ -335,12 +489,15 @@ export const LegalChat = ({ user }) => {
 
                   {/* Translated Query Badge */}
                   {msg.role === 'assistant' && msg.translated_query && (
-                    <div className="flex flex-wrap items-center gap-2 mt-2 pt-2 border-t border-slate-200/60 text-xs">
-                      <div className="inline-flex items-center gap-1.5 text-slate-600 bg-white px-2 py-1 rounded border border-slate-200">
-                        <Sparkles className="h-3 w-3 text-amber-500 shrink-0" />
-                        <span className="font-medium text-slate-700">Processed Query:</span>
-                        <span className="italic">"{msg.translated_query}"</span>
+                    <div className="mt-2 pt-2 border-t border-slate-200/60 text-xs">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="inline-flex items-center gap-1.5 text-slate-600 bg-white px-2 py-1 rounded border border-slate-200">
+                          <Sparkles className="h-3 w-3 text-amber-500 shrink-0" />
+                          <span className="font-medium text-slate-700">Processed Query:</span>
+                          <span className="italic">"{msg.translated_query}"</span>
+                        </div>
                       </div>
+                      {msg.id && <QueryBreakdown messageId={msg.id} />}
                     </div>
                   )}
 

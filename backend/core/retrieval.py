@@ -4,14 +4,14 @@ import Levenshtein
 from sklearn.metrics.pairwise import cosine_similarity
 
 from synonyms import LEGAL_SYNONYMS
-from core.nlp_utils import clean_conversational_noise, is_tagalog_or_taglish, strip_filipino_affixes
+from core.nlp_utils import clean_conversational_noise, is_tagalog_or_taglish, strip_filipino_affixes, TAGALOG_MARKERS, CONVERSATIONAL_FILLERS
 
 STOPWORDS = {
     "ang","ng","na","sa","at","ay","mga","ko","mo","siya","kami","kayo","sila",
     "ito","iyan","iyon","ano","sino","bakit","paano","kailan","saan","ba","po",
     "nga","yung","para","kung","pero","kasi","dahil","gusto","pwede","naman",
     "lang","daw","din","rin","a","an","the","is","are","was","were","what","who",
-    "how","where","why","can","could","would","should","do","does","did",
+    "how","when","where","why","can","could","would","should","do","does","did",
     "i","me","my","we","you","your","it","about","and","or","of","in","on","to",
     "for","with","he","she","him","his","her","they","them","their","this","that",
     "these","those","be","been","being","has","have","had","by","from","as","not",
@@ -60,6 +60,92 @@ def find_direct_article_index(raw_message: str, search_engine):
     return None
 
 
+def _trace_removed_fillers(raw_message: str) -> list:
+    """Which conversational filler phrases clean_conversational_noise() strips out
+    (same patterns, same order), so the UI can say what was removed."""
+    text = raw_message.lower().replace('"', ' ').replace("'", " ")
+    removed: list = []
+    for pattern in CONVERSATIONAL_FILLERS:
+        for m in re.finditer(pattern, text):
+            phrase = m.group().strip()
+            if phrase and phrase not in removed:
+                removed.append(phrase)
+        text = re.sub(pattern, " ", text)
+    return removed
+
+
+def build_query_trace(raw_message, message_text, cached_translation, matched_terms,
+                      vocabulary, vocab_by_letter, dir_idx=None) -> dict:
+    """
+    Explains, word by word, what happened to the user's query. Read-only: it
+    mirrors the filters in build_query_tokens() but never changes the scoring.
+
+    Each word gets status "kept" | "corrected" | "dropped". A dropped word has a
+    reason code the frontend turns into text: "too_short", "stopword",
+    "not_in_vocab", "no_close_match", or "translated" (a Tagalog word that isn't
+    in the English Labor Code text, replaced by its English synonym terms).
+    `translations` lists the English terms a word was expanded into.
+    """
+    words: list = []
+    seen: set = set()
+    for w in re.sub(r'[^\w\s]', '', message_text).split():
+        lw = w.lower()
+        if lw in seen:
+            continue
+        seen.add(lw)
+        stem = strip_filipino_affixes(lw)
+
+        translations: list = []
+        for term, english_terms in LEGAL_SYNONYMS.items():
+            if term in matched_terms and " " not in term and term.lower() in (lw, stem):
+                for eng in english_terms:
+                    if eng not in translations:
+                        translations.append(eng)
+
+        status, reason, corrected_to = "kept", None, None
+        if dir_idx is not None and lw in ("article", "art"):
+            pass  # these words drive the direct "Article N" lookup, so they are used
+        elif lw in STOPWORDS:
+            status, reason = "dropped", "stopword"
+        elif not (len(lw) > 2 or lw.isdigit()):
+            status, reason = "dropped", "too_short"
+        elif lw not in vocabulary:
+            closest = None
+            if len(lw) > 5:
+                candidates = vocab_by_letter.get(lw[0], [])
+                if candidates:
+                    best = min(candidates, key=lambda v: Levenshtein.distance(lw, v))
+                    dist = Levenshtein.distance(lw, best)
+                    if (len(lw) <= 8 and dist == 1) or (len(lw) >= 9 and dist <= 2):
+                        closest = best
+            if closest:
+                status, corrected_to = "corrected", closest
+            else:
+                status = "dropped"
+                reason = "no_close_match" if len(lw) > 5 else "not_in_vocab"
+                if translations:
+                    reason = "translated"
+
+        words.append({
+            "word": w,
+            "status": status,
+            "reason": reason,
+            "corrected_to": corrected_to,
+            "translations": translations,
+        })
+
+    return {
+        "words": words,
+        "phrases": [
+            {"phrase": t, "english": english_terms}
+            for t, english_terms in LEGAL_SYNONYMS.items()
+            if " " in t and t in matched_terms
+        ],
+        "fillers_removed": _trace_removed_fillers(raw_message),
+        "cached_translation": cached_translation or None,
+    }
+
+
 async def build_query_tokens(raw_message: str, search_engine, db, vocab_by_letter: dict) -> dict:
     clean_message = clean_conversational_noise(raw_message)
     message_text = clean_message.lower() if clean_message else raw_message.lower()
@@ -68,30 +154,44 @@ async def build_query_tokens(raw_message: str, search_engine, db, vocab_by_lette
 
     # Tagalog/Taglish: use DB translation cache only (no external API)
     search_text = message_text
+    cached_translation = ""
     if is_tagalog_or_taglish(search_text):
         cached = await db.translation_cache.find_one({"query": re.sub(r'[^\w\s]', ' ', message_text)})
         if cached:
-            search_text += f" {cached.get('translation', '')}"
+            cached_translation = cached.get('translation', '') or ""
+            search_text += f" {cached_translation}"
 
-    # Synonym expansion (with deduplication)
-    expanded_keywords: list = []
-    seen_expanded = set()
+    # Synonym expansion — LONGEST MATCH WINS (with deduplication).
+    # An English term phrase (e.g. "maternity leave", "sick leave") that matches
+    # consumes the words it covers, so a broader single-word key such as "leave"
+    # can't also fire inside it and pull in an unrelated article
+    # ("service incentive leave"). Tagalog/conversational phrase keys do NOT
+    # consume: they are whole-question patterns meant to fire alongside the
+    # word-level keys.
     clean_text_no_punct = re.sub(r'[^\w\s]', ' ', search_text)
-    raw_words = clean_text_no_punct.split()
+    remaining_text = f" {clean_text_no_punct} "
+    matched_terms: set = set()
+
+    phrase_terms = sorted((t for t in LEGAL_SYNONYMS if " " in t), key=len, reverse=True)
+    for term in phrase_terms:
+        tl = term.lower()
+        if tl in search_text or tl in clean_text_no_punct:
+            matched_terms.add(term)
+            if not (set(tl.split()) & TAGALOG_MARKERS):
+                remaining_text = re.sub(rf'\b{re.escape(tl)}\b', ' ', remaining_text)
+
+    raw_words = remaining_text.split()
     stemmed_words = [strip_filipino_affixes(w) for w in raw_words]
     all_candidate_words = set(raw_words + stemmed_words)
-    
+    for term in LEGAL_SYNONYMS:
+        if " " not in term and term.lower() in all_candidate_words:
+            matched_terms.add(term)
+
+    # Emit in the original dictionary order, skipping English terms already added
+    expanded_keywords: list = []
+    seen_expanded: set = set()
     for term, english_terms in LEGAL_SYNONYMS.items():
-        tl = term.lower()
-        matched = False
-        if " " in tl:
-            if tl in search_text or tl in clean_text_no_punct:
-                matched = True
-        else:
-            if tl in all_candidate_words:
-                matched = True
-        
-        if matched:
+        if term in matched_terms:
             for eng in english_terms:
                 if eng not in seen_expanded:
                     seen_expanded.add(eng)
@@ -132,6 +232,10 @@ async def build_query_tokens(raw_message: str, search_engine, db, vocab_by_lette
         "dir_idx": dir_idx,
         "corrected_tokens": unique_corrected_tokens,
         "query_text": " ".join(unique_corrected_tokens),
+        "trace": build_query_trace(
+            raw_message, message_text, cached_translation, matched_terms,
+            search_engine.vocabulary, vocab_by_letter, dir_idx,
+        ),
     }
 
 
@@ -159,7 +263,7 @@ def score_and_gate(search_engine, corrected_tokens: list, dir_idx, bge_scores: n
         if matching:
             title_boost[i] = sum(search_engine.vocab_idf.get(w, 1.0) for w in matching)
 
-    # 4. Reciprocal Rank Fusion: BGE-M3 (raw) + BM25 (preprocessed) + TF-IDF (preprocessed) + Title Boost
+    # 4. Reciprocal Rank Fusion: BGE-M3 (processed query) + BM25 (preprocessed) + TF-IDF (preprocessed) + Title Boost
     final_scores = rrf(bge_scores) + rrf(bm25_scores) + rrf(tfidf_scores) + rrf(title_boost)
 
     domain_gate_passed = float(np.max(bge_scores)) >= DOMAIN_GATE_THRESHOLD or dir_idx is not None

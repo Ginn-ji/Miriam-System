@@ -19,7 +19,9 @@ from core.retrieval import (
     build_query_tokens, 
     score_and_gate, 
     build_vocab_index, 
-    THEORETICAL_MAX_RRF
+    THEORETICAL_MAX_RRF,
+    raw_bge_stage1,
+    restrict_to_candidates,
 )
 
 logger = logging.getLogger(__name__)
@@ -65,13 +67,24 @@ async def legal_chat(
         translated_query = tokens["query_text"]  # Capturing the normalized/translated query
         q_set            = set(corr_tokens)
 
+        # Keep the word-by-word explanation so the UI can show how the query was
+        # processed (saved before any early return, so rejected queries have one too)
+        try:
+            await db.query_traces.insert_one({
+                "message_id": message_id,
+                "trace": tokens.get("trace"),
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as trace_err:
+            logger.warning(f"Could not save query trace: {trace_err}")
+
         # ── TERMINAL LOGGING / DISPLAY ───────────────────────────────────────
         print("\n" + "=" * 65, flush=True)
         print(f"RAW USER QUERY:         {message}", flush=True)
         print(f"TRANSLATED / PROCESSED:  {translated_query}", flush=True)
         print(f"CORRECTED TOKENS:       {corr_tokens}", flush=True)
         if dir_idx is not None:
-            print(f"🎯 DIRECT ARTICLE HIT:     Index {dir_idx} ({search_engine.laws[dir_idx].get('article')})", flush=True)
+            print(f">> DIRECT ARTICLE HIT:     Index {dir_idx} ({search_engine.laws[dir_idx].get('article')})", flush=True)
         print("=" * 65 + "\n", flush=True)
         logger.info(f"Translated query: '{translated_query}' (Raw: '{message}')")
         # ─────────────────────────────────────────────────────────────────────
@@ -94,11 +107,21 @@ async def legal_chat(
             )
 
         # ── BGE-M3 dense scores ───────────────────────────────────────────────
-        encoder    = search_engine.get_bge_model()
-        bge_scores = util.cos_sim(
-            encoder.encode(translated_query, convert_to_tensor=True),
-            search_engine.bge_embeddings
-        )[0].cpu().numpy()
+        # One batched encode for both: [0] = RAW message (Stage 1),
+        # [1] = processed/translated query (original pipeline, unchanged).
+        encoder = search_engine.get_bge_model()
+        query_embs = encoder.encode([message.strip(), translated_query], convert_to_tensor=True)
+        sims = util.cos_sim(query_embs, search_engine.bge_embeddings).cpu().numpy()
+        raw_scores, bge_scores = sims[0], sims[1]
+
+        # ── STAGE 1: raw query vs. the whole database (coarse candidate pool) ──
+        stage1 = raw_bge_stage1(raw_scores, dir_idx)
+        print(
+            f"STAGE 1 (raw BGE):      top score {float(np.max(raw_scores)):.3f} | "
+            f"pool {len(stage1['candidate_indices'])} | domain gate "
+            f"{'PASS' if stage1['domain_gate_passed'] else 'FAIL'}",
+            flush=True,
+        )
 
         limit = (await db.settings.find_one({"key": "chat_limit"}) or {}).get("value", 5)
 
@@ -106,7 +129,7 @@ async def legal_chat(
         scored = score_and_gate(search_engine, corr_tokens, dir_idx, bge_scores)
         f_scores = scored["final_scores"]
 
-        if not scored["domain_gate_passed"]:
+        if not scored["domain_gate_passed"] or not stage1["domain_gate_passed"]:
             return ChatResponse(
                 message_id=message_id,
                 response="Query not related to Labor Law.",
@@ -129,7 +152,14 @@ async def legal_chat(
             matched.append(d_law)
 
         # ── Ranked hybrid retrieval ────────────────────────────────────────────
-        for idx in scored["ranked_indices"]:
+        # STAGE 2: original hybrid ranking, limited to the Stage 1 pool
+        stage2_indices = restrict_to_candidates(scored["ranked_indices"], stage1["candidate_indices"])
+        print(
+            f"STAGE 2 (hybrid):       ranked {len(scored['ranked_indices'])} -> "
+            f"kept {len(stage2_indices)} after Stage 1 pool filter",
+            flush=True,
+        )
+        for idx in stage2_indices:
             if len(matched) >= limit:
                 break
 
@@ -339,6 +369,18 @@ async def get_article_feedback(
         return await cursor.to_list(3)
 
     return {"liked": await latest("like"), "disliked": await latest("dislike")}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QUERY TRACE (how the user's words were processed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.get("/trace/{message_id}")
+async def get_query_trace(message_id: str):
+    doc = await db.query_traces.find_one({"message_id": message_id}, {"_id": 0, "trace": 1})
+    if not doc or not doc.get("trace"):
+        raise HTTPException(status_code=404, detail="No breakdown available for this message.")
+    return doc["trace"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
